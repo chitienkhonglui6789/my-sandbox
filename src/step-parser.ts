@@ -369,6 +369,58 @@ function parseSingleClause(
     };
   }
 
+  // 9.1. CHỌN OPTION TỪ DROPDOWN / DANH SÁCH (SELECT_OPTION)
+  // Cú pháp 1: Chọn "Vietnam" trong/từ dropdown "Quốc gia"
+  const selectInDropdownMatch = text.match(
+    /^(?:chọn|select)\s+(?:option|mục|giá\s+trị)?\s*["'`]([^"'`]+)["'`]\s+(?:từ|trong|ở|tại)\s+(?:dropdown|menu|danh\s+sách|hộp\s+chọn|ô|trường)?\s*["'`]([^"'`]+)["'`]/i
+  );
+  if (selectInDropdownMatch) {
+    return {
+      stepNumber,
+      subIndex,
+      totalSubActions,
+      rawStepText,
+      subInstruction: text,
+      type: 'SELECT_OPTION',
+      value: selectInDropdownMatch[1].trim(),
+      targetHint: selectInDropdownMatch[2].trim(),
+    };
+  }
+
+  // Cú pháp 2: Chọn dropdown "Quốc gia" là "Vietnam"
+  const selectDropdownIsMatch = text.match(
+    /^(?:chọn|select)\s+(?:dropdown|hộp\s+chọn|ô|trường)?\s*["'`]([^"'`]+)["'`]\s+(?:là|thành|với\s+giá\s+trị)\s*["'`]([^"'`]+)["'`]/i
+  );
+  if (selectDropdownIsMatch) {
+    return {
+      stepNumber,
+      subIndex,
+      totalSubActions,
+      rawStepText,
+      subInstruction: text,
+      type: 'SELECT_OPTION',
+      targetHint: selectDropdownIsMatch[1].trim(),
+      value: selectDropdownIsMatch[2].trim(),
+    };
+  }
+
+  // Cú pháp 3: Chọn option "Vietnam"
+  const selectOptionOnlyMatch = text.match(
+    /^(?:chọn|select)\s+option\s+["'`]([^"'`]+)["'`]/i
+  );
+  if (selectOptionOnlyMatch) {
+    return {
+      stepNumber,
+      subIndex,
+      totalSubActions,
+      rawStepText,
+      subInstruction: text,
+      type: 'SELECT_OPTION',
+      value: selectOptionOnlyMatch[1].trim(),
+      targetHint: selectOptionOnlyMatch[1].trim(),
+    };
+  }
+
   // 10. RÊ CHUỘT (HOVER)
   if (/^(?:rê\s+chuột|hover|di\s+chuột)\b/i.test(text)) {
     const quoted = extractQuotedOrBacktick(text);

@@ -8,6 +8,213 @@ const TRACE_CACHE_FILE = path.join(process.cwd(), 'output', 'trace_dataset.json'
 export const ANTYNOM_VIOLATION = 'ANTYNOM_VIOLATION';
 export const ANTONYM_VIOLATION = 'ANTYNOM_VIOLATION'; // Alias cho tính tương thích
 
+/**
+ * Trụ cột 11: Danh sách selector phổ biến của Floating Portal Overlay Dropdown
+ * (React-Select, Ant Design, Material-UI, Select2, Radix UI, Headless UI, Bootstrap)
+ */
+export const FLOATING_PORTAL_SELECTORS: string[] = [
+  'body > [role="listbox"]',
+  'body > [role="menu"]',
+  'body > .ant-select-dropdown',
+  'body > .MuiAutocomplete-popper',
+  'body > .MuiPopover-root',
+  'body > .MuiMenu-paper',
+  '.ant-select-dropdown:not(.ant-select-dropdown-hidden)',
+  '.MuiAutocomplete-popper',
+  '.MuiPopover-root',
+  '.MuiMenu-root',
+  '[role="listbox"]:not([aria-hidden="true"])',
+  '[role="menu"]:not([aria-hidden="true"])',
+  '.select2-dropdown',
+  '.select2-container--open .select2-dropdown',
+  '[data-radix-popper-content-wrapper]',
+  '[data-floating-ui-portal]',
+  '.dropdown-menu.show',
+  '.custom-select-menu.open',
+  '.custom-select-menu:not([style*="display: none"])',
+  'div[class*="-menu"]',
+  'div[class*="select__menu"]',
+];
+
+/**
+ * Trụ cột 11: Nhận diện khi một select không phải là <select> thuần
+ * mà là Custom Trigger div/button (React-Select, Ant Design, Material-UI, Select2, Headless UI).
+ */
+export function isCustomSelectTrigger(candidate: DOMCandidate): boolean {
+  if (!candidate) return false;
+  if (candidate.tag === 'select') return false; // Native select
+  if (candidate.tag === 'option') return false; // Option element
+
+  const role = (candidate.role || '').toLowerCase();
+  const classes = (candidate.fingerprint?.stableClasses || []).map((c) => c.toLowerCase()).join(' ');
+  const nearLabel = (candidate.nearLabel || '').toLowerCase();
+  const text = (candidate.text || '').toLowerCase();
+  const placeholder = (candidate.placeholder || '').toLowerCase();
+
+  // 1. Theo thuộc tính role và ARIA chuẩn
+  if (role === 'combobox') return true;
+  if (candidate.fingerprint?.selectorPath?.includes('aria-haspopup')) return true;
+
+  // 2. Ant Design (Antd)
+  if (
+    classes.includes('ant-select') ||
+    classes.includes('ant-select-selector') ||
+    classes.includes('ant-select-selection')
+  ) {
+    return true;
+  }
+
+  // 3. Material-UI (MUI)
+  if (
+    classes.includes('muiselect') ||
+    classes.includes('muiautocomplete') ||
+    classes.includes('muiinputbase')
+  ) {
+    return true;
+  }
+
+  // 4. React-Select
+  if (classes.includes('-control') || classes.includes('select__control')) {
+    return true;
+  }
+
+  // 5. Select2
+  if (classes.includes('select2-selection') || classes.includes('select2-choice')) {
+    return true;
+  }
+
+  // 6. Generic custom dropdown trigger
+  if (
+    classes.includes('custom-select') ||
+    classes.includes('dropdown-toggle') ||
+    classes.includes('select-trigger') ||
+    classes.includes('combobox-trigger') ||
+    classes.includes('dropdown-btn')
+  ) {
+    return true;
+  }
+
+  // 7. Nhãn hoặc placeholder chỉ định việc chọn từ danh sách
+  if (
+    candidate.tag === 'button' ||
+    candidate.tag === 'div' ||
+    candidate.tag === 'span'
+  ) {
+    if (
+      /^(chọn|select|vui lòng chọn|please select)\b/i.test(text) ||
+      /^(chọn|select)\b/i.test(placeholder) ||
+      /dropdown|combobox|select/i.test(nearLabel)
+    ) {
+      if (
+        candidate.tag === 'button' ||
+        role === 'button' ||
+        classes.includes('dropdown') ||
+        classes.includes('select')
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Trụ cột 11: Nhận diện một phần tử có phải là Option bên trong Custom Floating Portal Dropdown hay không.
+ */
+export function isPortalOption(candidate: DOMCandidate): boolean {
+  if (!candidate) return false;
+  if (candidate.tag === 'option') return true;
+
+  const role = (candidate.role || '').toLowerCase();
+  if (role === 'option' || role === 'menuitem') return true;
+
+  const classes = (candidate.fingerprint?.stableClasses || []).map((c) => c.toLowerCase()).join(' ');
+
+  // Ant Design
+  if (classes.includes('ant-select-item-option') || classes.includes('ant-select-item')) return true;
+
+  // Material-UI
+  if (classes.includes('muiautocomplete-option') || classes.includes('muimenuitem')) return true;
+
+  // React-Select
+  if (classes.includes('-option') || classes.includes('select__option')) return true;
+
+  // Select2
+  if (classes.includes('select2-results__option')) return true;
+
+  // Generic dropdown item
+  if (
+    classes.includes('dropdown-item') ||
+    classes.includes('select-option') ||
+    classes.includes('menu-item')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Trụ cột 11: Tìm kiếm Option bên trong Floating Portal Overlay theo text cần chọn
+ * (hỗ trợ chính xác, không dấu tiếng Việt và fuzzy Damerau-Levenshtein).
+ */
+export function resolvePortalOptionCandidate(
+  candidates: DOMCandidate[],
+  optionText: string
+): DOMCandidate | null {
+  if (!candidates || candidates.length === 0 || !optionText) return null;
+
+  const targetClean = normalizeClean(optionText);
+  const targetNoAcc = removeVietnameseDiacritics(targetClean);
+
+  let bestCandidate: DOMCandidate | null = null;
+  let highestScore = -1;
+
+  for (const cand of candidates) {
+    // Không bao giờ chọn phần tử vi phạm từ trái nghĩa (Antonym Barrier)
+    const antonymCheck = checkAntonymConflict(optionText, cand);
+    if (antonymCheck.hasConflict) continue;
+
+    const textClean = normalizeClean(cand.text);
+    const textNoAcc = removeVietnameseDiacritics(textClean);
+    const valClean = normalizeClean(cand.value);
+    const valNoAcc = removeVietnameseDiacritics(valClean);
+    const ariaClean = normalizeClean(cand.ariaLabel);
+
+    let score = 0;
+
+    // 1. Khớp chính xác tuyệt đối (100)
+    if (textClean === targetClean || valClean === targetClean || ariaClean === targetClean) {
+      score = 100;
+    } else if (textNoAcc === targetNoAcc || valNoAcc === targetNoAcc) {
+      score = 95; // Khớp không dấu
+    } else if (textClean.includes(targetClean) || valClean.includes(targetClean)) {
+      score = 85; // Khớp chứa chuỗi
+    } else if (textNoAcc.includes(targetNoAcc)) {
+      score = 80;
+    } else {
+      // 2. Thử fuzzy Damerau-Levenshtein
+      const dam = computeDamerauSimilarity(targetClean, textClean);
+      if (dam.isAcceptable && dam.similarity >= 0.75) {
+        score = Math.round(dam.similarity * 80);
+      }
+    }
+
+    // Ưu tiên các phần tử mang thuộc tính option rõ ràng
+    if (score > 0 && isPortalOption(cand)) {
+      score += 10;
+    }
+
+    if (score > highestScore && score >= 60) {
+      highestScore = score;
+      bestCandidate = cand;
+    }
+  }
+
+  return bestCandidate;
+}
+
 export type MatchSource = 'CACHE' | 'SEMANTIC_RULE' | 'FUZZY_HEALED' | 'LLM' | 'NONE';
 
 export interface ResolveCandidateResult {
@@ -549,6 +756,19 @@ export async function resolveTargetCandidate(
       }
       return true;
     }
+    if (action.type === 'SELECT_OPTION') {
+      if (
+        c.tag === 'select' ||
+        c.tag === 'option' ||
+        isCustomSelectTrigger(c) ||
+        isPortalOption(c) ||
+        c.role === 'combobox' ||
+        c.role === 'listbox'
+      ) {
+        return true;
+      }
+      return c.tag === 'button' || c.tag === 'div' || c.tag === 'span';
+    }
     return true;
   });
 
@@ -697,6 +917,14 @@ export async function resolveTargetCandidate(
         if (/^(chưa|đã|không|thông báo|trạng thái)\b/i.test(textNorm)) {
           score -= 35;
         }
+      }
+    }
+
+    if (action.type === 'SELECT_OPTION') {
+      if (cand.tag === 'select' || isCustomSelectTrigger(cand) || cand.role === 'combobox') {
+        score += 25;
+      } else if (cand.tag === 'option' || isPortalOption(cand)) {
+        score += 20;
       }
     }
 

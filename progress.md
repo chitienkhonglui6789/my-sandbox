@@ -192,6 +192,37 @@ autotest/
       - Tự động phục hồi khi tab con bị đóng từ bên ngoài (`newPage.on('close')`).
       - Bắt trọn vẹn Native Alert xuất hiện trên tab con.
       - Integration: `runStrictTestScenario` chạy hoàn hảo kịch bản 8 bước chuyển tab, điền dữ liệu tab con, đóng tab con và xác thực tab gốc.
+13. **Triển khai Trụ cột 10 (Virtualized List Incremental Scroll) & Trụ cột 11 (Custom Portal Dropdown Protocol)**:
+    - File triển khai: [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts), [src/dom-distiller.ts](file:///e:/SourceCode/autotest/src/dom-distiller.ts).
+    - Bộ test: [tests/virtual-scroll-dropdown.test.ts](file:///e:/SourceCode/autotest/tests/virtual-scroll-dropdown.test.ts) (12/12 tests PASS).
+    - **Trụ cột 10: Virtualized List Incremental Scroll Engine**:
+      - Khi phần tử mục tiêu không tìm thấy trong viewport hiện tại: Thực hiện cuộn phân đoạn (Step Scroll) 350px mỗi lần (tối đa 5 lần = 1750px).
+      - Hỗ trợ cuộn thông minh cho cả `window` và container ảo lồng nhau có `overflow-y: auto / scroll` (`.virtual-list`, `.rc-virtual-list-holder`, `[role="listbox"]`).
+      - Nín thở 200ms sau mỗi bước cuộn để Virtual DOM / API nạp và mount node mới rồi quét lại danh sách candidates.
+      - Cơ chế **Bottom Boundary Cutoff**: Nhận diện chạm đáy trang (`window.scrollY + window.innerHeight >= document.body.scrollHeight - 10`) để dừng cuộn khẩn cấp và fail-fast, ngăn chặn việc thử lại mù quáng.
+      - Kích hoạt `element.scrollIntoViewIfNeeded()` (hoặc căn giữa block: center) ngay khi tìm thấy phần tử trước khi thực hiện tương tác vật lý.
+    - **Trụ cột 11: Custom Select / Floating Portal Dropdown Protocol**:
+      - Nhận diện toàn diện Custom Select Trigger: Ant Design (`.ant-select-selector`), Material-UI (`.MuiSelect-select`, `[role="combobox"]`), React-Select (`.select__control`), Select2 (`.select2-selection`), Radix UI / Headless UI.
+      - **Chu trình 3 Pha bắt buộc**:
+        - **Pha 1 (Mở Menu)**: Cuộn và click trigger container.
+        - **Pha 2 (Đợi Portal Render)**: Chờ các selector overlay gắn tại cuối thẻ `<body>` (`body > [role="listbox"]`, `body > .ant-select-dropdown`, `.MuiAutocomplete-popper`, v.v.), nín thở 200ms cho animation mở menu hoàn tất.
+        - **Pha 3 (Tìm & Click Option)**: Quét option bên trong portal overlay, hỗ trợ đối soát chính xác, không dấu tiếng Việt và Damerau-Levenshtein fuzzy healing, click option và nín thở đợi settlement.
+        - **Khôi phục khi Menu Treo**: Nếu sau khi click mà portal vẫn còn mở che khuất các phần tử bên dưới, AI tự động gửi phím `Escape` để giải phóng màn hình.
+      - Hỗ trợ đầy đủ thẻ `<select>` native qua `selectOption` và dispatch `input`/`change` events.
+      - Bổ sung parser cho câu lệnh chọn dropdown tiếng Việt trong [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts): `Chọn "[Option]" từ dropdown "[Select]"`.
+    - **Nghiệm thu 12/12 Unit & Integration Tests PASSED 100%**:
+      - Virtual list incremental scroll tìm thấy mục ở vị trí sâu.
+      - Bottom boundary cutoff dừng sớm khi trang ngắn chạm đáy.
+      - Cuộn phân đoạn bên trong scrollable box có overflow riêng.
+      - Nhận diện chính xác Trigger và Option của mọi framework UI.
+      - Ant Design custom dropdown 3-pha protocol.
+      - Material-UI dropdown với overlay portal cuối body.
+      - React-Select control và menu overlay.
+      - Tự động khôi phục khi menu treo bằng phím Escape.
+      - Biên dịch cú pháp DSL tự nhiên tiếng Việt cho hành động chọn dropdown.
+      - E2E runStrictTestScenario với Custom Dropdown Antd.
+      - E2E runStrictTestScenario với Native Select.
+      - E2E runStrictTestScenario với Virtual List Scroll sâu.
 
 ---
 
@@ -274,6 +305,18 @@ npm run test:cli -- --case saucedemo
 8. **Đồng bộ hóa Barrier và Dialog Interceptor xuyên suốt Multi-Tab**:
    - *Nguyên nhân*: Mỗi tab trình duyệt sở hữu DOM Tree, Network Request Stack và Dialog Event hoàn toàn cô lập. Nếu chỉ tiêm `NativeDialogInterceptor` và `ActionSettlementBarrier` trên tab ban đầu, các alert xuất hiện trên tab con sẽ bị bỏ sót, khiến trình duyệt bị treo cứng vĩnh viễn (hang execution loop).
    - *Cách xử lý dứt điểm*: Trong listener `context.on('page')`, ngay khi tab con được khởi tạo, tự động tiêm `attachDialogInterceptor(newPage)` và `getOrCreateBarrier(newPage)`. Đồng thời cung cấp API `tabManager.getAllCapturedDialogs()` gom toàn bộ dialogs của mọi tab theo thứ tự thời gian (`timestamp`), giúp Fast-Path `ASSERT_TEXT` đối soát chính xác thông điệp dù nó xuất hiện ở tab nào.
+
+9. **Thứ tự ưu tiên trong `FLOATING_PORTAL_SELECTORS` và hiện tượng Overlap Selector**:
+   - *Nguyên nhân*: Các framework như Ant Design (`.ant-select-dropdown`), Material-UI (`.MuiAutocomplete-popper`) thường đồng thời gắn thuộc tính `role="listbox"` vào container portal của chúng. Nếu selector `body > [role="listbox"]` được kiểm tra trước, kết quả trả về `matchedPortalSelector` sẽ là `body > [role="listbox"]` thay vì `.ant-select-dropdown` hay `.MuiAutocomplete-popper`.
+   - *Cách xử lý dứt điểm*: Khi kiểm tra selector portal hoặc viết assertion đối soát, luôn cho phép khớp linh hoạt giữa selector ngữ nghĩa ARIA chuẩn (`[role="listbox"]`) và class đặc thù của framework (`ant-select-dropdown` / `MuiAutocomplete-popper`).
+
+10. **Bẫy Event Loop bị treo do HTTP Mock Server không được đóng khi Assertion thất bại trong Unit Test**:
+    - *Nguyên nhân*: Trong các bài test tạo mock HTTP server (`http.createServer().listen(0)`), nếu đặt `server.close()` và `browser.close()` ở cuối hàm test mà không bọc trong `try ... finally`, bất kỳ assertion nào ném lỗi (`AssertionError`) sẽ làm ngắt luồng trước khi gọi `server.close()`. Node.js event loop tiếp tục giữ cổng socket mở vô thời hạn, khiến tiến trình test bị treo cứng và không bao giờ thoát (hanging process).
+    - *Cách xử lý dứt điểm*: Luôn bọc toàn bộ mã test sử dụng mock HTTP server trong khối `try { ... } finally { await browser.close(); await close(); }` để đảm bảo tài nguyên mạng luôn được giải phóng 100% trong mọi tình huống.
+
+11. **Bẫy Container Cuộn Ảo (Scrollable Container) thay vì cuộn cửa sổ Window**:
+    - *Nguyên nhân*: Trong các component bảng ảo hóa (Virtual Table, React-Window) hoặc dropdown danh sách dài, thanh cuộn nằm trên phần tử cha (`div` có CSS `overflow-y: auto / scroll`) chứ không phải trên `window`. Nếu chỉ gọi `window.scrollBy(0, 350)`, container ảo bên trong hoàn toàn không xê dịch và các node mới không bao giờ được mount vào DOM.
+    - *Cách xử lý dứt điểm*: Trong `executeVirtualListScrollSearch()`, phát hiện thông minh các container có `overflow-y: scroll / auto` và `scrollHeight > clientHeight` nằm trong tầm nhìn, đồng thời kích hoạt `container.scrollBy({ top: px })` song song với `window.scrollBy({ top: px })`.
 
 ---
 *Tài liệu này được duy trì liên tục để phục vụ chuyển giao công việc giữa các kỹ sư phát triển.*

@@ -12,7 +12,14 @@ import {
 import { compileVietnameseScenarioAsync } from './step-parser';
 import { distillPageDOM } from './dom-distiller';
 import { ActionSettlementBarrier } from './settlement-barrier';
-import { resolveTargetCandidate, ResolveCandidateResult } from './element-resolver';
+import {
+  resolveTargetCandidate,
+  ResolveCandidateResult,
+  isCustomSelectTrigger,
+  isPortalOption,
+  resolvePortalOptionCandidate,
+  FLOATING_PORTAL_SELECTORS,
+} from './element-resolver';
 import { LLMBridge } from './llm-bridge';
 
 export interface RunOptions {
@@ -532,6 +539,398 @@ export async function waitForUIQuiescence(
   await b.waitForQuiescence(timeoutMs);
 }
 
+export interface VirtualScrollSearchOptions {
+  stepPx?: number;
+  maxSteps?: number;
+  pauseWaitMs?: number;
+  screenshotBase64?: string;
+}
+
+export interface VirtualScrollSearchResult {
+  found: boolean;
+  candidate: DOMCandidate | null;
+  candidates: DOMCandidate[];
+  resolved: ResolveCandidateResult | null;
+  stepsScrolled: number;
+  totalPxScrolled: number;
+  hitBottom: boolean;
+}
+
+/**
+ * Trụ cột 10: Virtualized List Incremental Scroll Engine
+ * Theo đúng QUY_CHUAN_AI_RESOLVER.md (Mục 12):
+ * - Khi phần tử mục tiêu không tìm thấy trong viewport hiện tại:
+ *   - Không fail ngay; thực hiện cuộn phân đoạn (Step Scroll): Cuộn xuống 350px mỗi lần (tối đa 5 lần = 1750px).
+ *   - Sau mỗi lần cuộn, nín thở 200ms để Virtual DOM / API nạp và mount node mới rồi quét lại danh sách candidates.
+ *   - Nếu phát hiện thấy element xuất hiện, gọi element.scrollIntoViewIfNeeded() trước khi tương tác.
+ *   - Điểm dừng chạm đáy (Bottom Boundary Cutoff): Nếu đã cuộn đến đáy trang mà phần tử vẫn không xuất hiện, hoặc hết 5 lần cuộn -> dừng lại fail-fast.
+ */
+export async function executeVirtualListScrollSearch(
+  page: Page,
+  action: AtomicAction,
+  barrier: ActionSettlementBarrier,
+  initialCandidates: DOMCandidate[],
+  options: VirtualScrollSearchOptions = {}
+): Promise<VirtualScrollSearchResult> {
+  const stepPx = options.stepPx ?? 350;
+  const maxSteps = options.maxSteps ?? 5;
+  const pauseWaitMs = options.pauseWaitMs ?? 200;
+
+  let currentCandidates = initialCandidates;
+  let resolved = await resolveTargetCandidate(
+    page.url(),
+    action,
+    currentCandidates,
+    options.screenshotBase64
+  );
+
+  if (resolved.candidate) {
+    return {
+      found: true,
+      candidate: resolved.candidate,
+      candidates: currentCandidates,
+      resolved,
+      stepsScrolled: 0,
+      totalPxScrolled: 0,
+      hitBottom: false,
+    };
+  }
+
+  let stepsScrolled = 0;
+  let totalPxScrolled = 0;
+  let hitBottom = false;
+
+  for (let step = 1; step <= maxSteps; step++) {
+    // 1. Thực hiện cuộn từng nấc 350px (hỗ trợ cả Window và Container cuộn ảo)
+    const scrollInfo = await page.evaluate((px) => {
+      const scrollContainers = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '.virtual-list, .virtual-scroll, [data-virtual-scroll], [role="listbox"], .rc-virtual-list-holder, .MuiAutocomplete-listbox, [style*="overflow"]'
+        )
+      ).filter((el) => {
+        const style = window.getComputedStyle(el);
+        const hasScroll =
+          (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+          el.scrollHeight > el.clientHeight;
+        const rect = el.getBoundingClientRect();
+        return hasScroll && rect.width > 50 && rect.height > 50 && rect.top < window.innerHeight && rect.bottom > 0;
+      });
+
+      let containerScrolled = false;
+      let containerAtBottom = false;
+
+      if (scrollContainers.length > 0) {
+        const container = scrollContainers[scrollContainers.length - 1];
+        const oldTop = container.scrollTop;
+        container.scrollBy({ top: px, behavior: 'instant' });
+        if (container.scrollTop > oldTop) {
+          containerScrolled = true;
+          containerAtBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 5;
+        }
+      }
+
+      const prevWindowY = window.scrollY;
+      window.scrollBy({ top: px, behavior: 'instant' });
+      const windowScrolled = window.scrollY > prevWindowY;
+      const windowAtBottom =
+        window.scrollY + window.innerHeight >=
+        Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - 10;
+
+      return {
+        didScroll: containerScrolled || windowScrolled,
+        atBottom: containerAtBottom || (windowAtBottom && !containerScrolled),
+      };
+    }, stepPx).catch(() => ({ didScroll: false, atBottom: true }));
+
+    stepsScrolled = step;
+    totalPxScrolled += stepPx;
+    hitBottom = scrollInfo.atBottom;
+
+    // 2. Nín thở 200ms để DOM ảo mount node mới
+    await new Promise((r) => setTimeout(r, pauseWaitMs));
+    await waitForUIQuiescence(page, 300, barrier).catch(() => {});
+
+    // 3. Quét lại danh sách candidates
+    currentCandidates = await distillPageDOM(page, action.targetHint, action.contextHint);
+
+    // 4. Đối soát lại candidate
+    resolved = await resolveTargetCandidate(
+      page.url(),
+      action,
+      currentCandidates,
+      options.screenshotBase64
+    );
+
+    if (resolved.candidate) {
+      // Kích hoạt scrollIntoViewIfNeeded() trước khi tương tác
+      const targetFrame =
+        resolved.candidate.frameIndex !== undefined &&
+        resolved.candidate.frameIndex < page.frames().length
+          ? page.frames()[resolved.candidate.frameIndex]
+          : page;
+
+      const loc = targetFrame.locator(resolved.candidate.selectorPath).first();
+      await loc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(async () => {
+        await loc.evaluate((el) => {
+          if (typeof (el as any).scrollIntoViewIfNeeded === 'function') {
+            (el as any).scrollIntoViewIfNeeded();
+          } else {
+            el.scrollIntoView({ behavior: 'instant', block: 'center' });
+          }
+        }).catch(() => {});
+      });
+
+      return {
+        found: true,
+        candidate: resolved.candidate,
+        candidates: currentCandidates,
+        resolved,
+        stepsScrolled,
+        totalPxScrolled,
+        hitBottom,
+      };
+    }
+
+    // Nếu đã chạm đáy (Bottom Boundary Cutoff) và không thể cuộn thêm, dừng lại
+    if (hitBottom && !scrollInfo.didScroll) {
+      break;
+    }
+  }
+
+  return {
+    found: false,
+    candidate: null,
+    candidates: currentCandidates,
+    resolved,
+    stepsScrolled,
+    totalPxScrolled,
+    hitBottom,
+  };
+}
+
+export interface CustomDropdownOptions {
+  portalTimeoutMs?: number;
+  animationWaitMs?: number;
+  autoCloseHangingMenu?: boolean;
+}
+
+export interface CustomDropdownResult {
+  success: boolean;
+  triggerClicked: boolean;
+  portalFound: boolean;
+  portalSelector?: string;
+  optionFound: boolean;
+  optionText?: string;
+  menuClosed: boolean;
+  error?: string;
+}
+
+/**
+ * Trụ cột 11: Custom Select / Floating Dropdown Protocol (React-Select, Ant Design, MUI, Select2)
+ * Theo đúng QUY_CHUAN_AI_RESOLVER.md (Mục 13):
+ * - Pha 1: Click vào container trigger để mở popup menu.
+ * - Pha 2: Chờ menu overlay xuất hiện tại cuối body (body > [role="listbox"], body > .ant-select-dropdown, .MuiAutocomplete-popper, v.v.).
+ * - Pha 3: Tìm option bên trong overlay portal theo text cần chọn và click.
+ * - Khôi phục khi menu treo: Nếu sau khi chọn mà menu không chịu biến mất (che khuất các nút bên dưới), tự động gửi phím Escape để đóng portal.
+ */
+export async function executeCustomDropdownProtocol(
+  page: Page,
+  barrier: ActionSettlementBarrier,
+  trigger: DOMCandidate,
+  optionText: string,
+  options: CustomDropdownOptions = {}
+): Promise<CustomDropdownResult> {
+  const portalTimeoutMs = options.portalTimeoutMs ?? 3500;
+  const animationWaitMs = options.animationWaitMs ?? 200;
+  const autoCloseHanging = options.autoCloseHangingMenu !== false;
+
+  const targetFrame =
+    trigger.frameIndex !== undefined && trigger.frameIndex < page.frames().length
+      ? page.frames()[trigger.frameIndex]
+      : page;
+
+  const triggerLocator = targetFrame.locator(trigger.selectorPath).first();
+
+  // Pha 1: Click vào container trigger để mở popup menu
+  try {
+    await triggerLocator.scrollIntoViewIfNeeded({ timeout: 2500 }).catch(() => {});
+    await triggerLocator.click({ timeout: 5000 });
+  } catch (err: any) {
+    return {
+      success: false,
+      triggerClicked: false,
+      portalFound: false,
+      optionFound: false,
+      menuClosed: false,
+      error: `Pha 1 thất bại: Không thể click vào trigger dropdown (${err?.message || String(err)})`,
+    };
+  }
+
+  await waitForUIQuiescence(page, 200, barrier).catch(() => {});
+
+  // Pha 2: Chờ menu overlay xuất hiện tại cuối body
+  let matchedPortalSelector: string | undefined = undefined;
+  const portalDeadline = Date.now() + portalTimeoutMs;
+
+  while (Date.now() < portalDeadline) {
+    const found = await page.evaluate((selectors) => {
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        if (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          style.opacity !== '0'
+        ) {
+          return sel;
+        }
+      }
+      return null;
+    }, FLOATING_PORTAL_SELECTORS).catch(() => null);
+
+    if (found) {
+      matchedPortalSelector = found;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 60));
+  }
+
+  // Nín thở 200ms để animation mở menu hoàn tất
+  await new Promise((r) => setTimeout(r, animationWaitMs));
+  await waitForUIQuiescence(page, 200, barrier).catch(() => {});
+
+  // Pha 3: Tìm option bên trong overlay portal theo text cần chọn và click
+  const clickRes = await page.evaluate(
+    ({ portalSel, targetText }) => {
+      const norm = (s: string | null | undefined) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const removeAccents = (str: string) =>
+        str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
+
+      const targetNorm = norm(targetText);
+      const targetNoAcc = removeAccents(targetNorm);
+
+      const portalRoot = portalSel ? document.querySelector(portalSel) : document.body;
+      const root = portalRoot || document.body;
+
+      const candidates = Array.from(
+        root.querySelectorAll<HTMLElement>(
+          '[role="option"], [role="menuitem"], .ant-select-item-option, .MuiAutocomplete-option, .MuiMenuItem-root, .select2-results__option, [class*="-option"], .dropdown-item, li, div, span'
+        )
+      ).filter((el) => {
+        const r = el.getBoundingClientRect();
+        const st = window.getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && st.display !== 'none' && st.visibility !== 'hidden';
+      });
+
+      // 1. Khớp chính xác tuyệt đối
+      for (const el of candidates) {
+        const t = norm(el.innerText || el.textContent);
+        if (t === targetNorm || removeAccents(t) === targetNoAcc) {
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return { clicked: true, text: t, method: 'EXACT' };
+        }
+      }
+
+      // 2. Khớp chứa chuỗi / từ khóa
+      for (const el of candidates) {
+        const t = norm(el.innerText || el.textContent);
+        if (t.includes(targetNorm) || removeAccents(t).includes(targetNoAcc)) {
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return { clicked: true, text: t, method: 'SUBSTRING' };
+        }
+      }
+
+      return { clicked: false };
+    },
+    { portalSel: matchedPortalSelector, targetText: optionText }
+  ).catch(() => ({ clicked: false }));
+
+  let optionClicked = clickRes.clicked;
+
+  // Fallback qua Playwright Locator nếu page.evaluate click chưa bắt được
+  if (!optionClicked) {
+    const rootLoc = matchedPortalSelector ? page.locator(matchedPortalSelector) : page;
+    const optionLoc = rootLoc.locator(`text="${optionText}"`).first();
+    if ((await optionLoc.count().catch(() => 0)) > 0) {
+      await optionLoc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+      await optionLoc.click({ timeout: 3000 }).catch(() => {});
+      optionClicked = true;
+    }
+  }
+
+  if (!optionClicked) {
+    return {
+      success: false,
+      triggerClicked: true,
+      portalFound: !!matchedPortalSelector,
+      portalSelector: matchedPortalSelector,
+      optionFound: false,
+      optionText,
+      menuClosed: false,
+      error: `Pha 3 thất bại: Không tìm thấy option khớp với "${optionText}" bên trong portal overlay (${matchedPortalSelector || 'không xác định'})`,
+    };
+  }
+
+  await waitForUIQuiescence(page, 400, barrier).catch(() => {});
+
+  // Khôi phục khi menu treo: kiểm tra portal còn mở không, nếu còn thì bấm Escape
+  let menuClosed = true;
+  if (matchedPortalSelector) {
+    const isStillOpen = await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.opacity !== '0'
+      );
+    }, matchedPortalSelector).catch(() => false);
+
+    if (isStillOpen) {
+      if (autoCloseHanging) {
+        await page.keyboard.press('Escape');
+        await new Promise((r) => setTimeout(r, 150));
+        const closedAfterEsc = await page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return true;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return !(
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            style.opacity !== '0'
+          );
+        }, matchedPortalSelector).catch(() => true);
+        menuClosed = closedAfterEsc;
+      } else {
+        menuClosed = false;
+      }
+    }
+  }
+
+  return {
+    success: true,
+    triggerClicked: true,
+    portalFound: !!matchedPortalSelector,
+    portalSelector: matchedPortalSelector,
+    optionFound: true,
+    optionText,
+    menuClosed,
+  };
+}
+
 /**
  * STRICT STEP-BY-STEP TEST RUNNER
  * - Chạy tuần tự từng bước 1..N theo đúng kịch bản.
@@ -957,21 +1356,32 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             latestPreShotBase64
           );
 
-          // Hỗ trợ lazy-loading / danh sách ảo: nếu là SELECT_ITEM và chưa thấy, thử cuộn nhẹ
-          if (!resolved.candidate && action.type === 'SELECT_ITEM' && (action.itemIndex || 1) > 1) {
-            await iterPage.evaluate(() => window.scrollBy(0, 350)).catch(() => { });
-            await waitForUIQuiescence(iterPage, 500, iterBarrier);
-            lastCandidates = await distillPageDOM(
+          // Trụ cột 10: Virtualized List Incremental Scroll Engine
+          // Khi phần tử mục tiêu không tìm thấy trong viewport hiện tại:
+          // Không fail ngay; thực hiện cuộn phân đoạn (Step Scroll): Cuộn xuống 350px mỗi lần (tối đa 5 lần = 1750px).
+          // Sau mỗi lần cuộn, đợi 200ms để DOM ảo mount node mới rồi quét lại danh sách candidates.
+          if (
+            !resolved.candidate &&
+            (action.type === 'CLICK' ||
+              action.type === 'SELECT_ITEM' ||
+              action.type === 'FILL' ||
+              action.type === 'HOVER' ||
+              action.type === 'SELECT_OPTION')
+          ) {
+            const vScrollRes = await executeVirtualListScrollSearch(
               iterPage,
-              action.targetHint,
-              action.contextHint
-            );
-            resolved = await resolveTargetCandidate(
-              iterPage.url(),
               action,
+              iterBarrier,
               lastCandidates,
-              latestPreShotBase64
+              { screenshotBase64: latestPreShotBase64 }
             );
+            if (vScrollRes.found && vScrollRes.candidate) {
+              lastCandidates = vScrollRes.candidates;
+              resolved = vScrollRes.resolved || resolved;
+              subDetails.push(
+                `[VIRTUAL SCROLL] Đã cuộn tìm thấy phần tử sau ${vScrollRes.stepsScrolled} nấc (${vScrollRes.totalPxScrolled}px)`
+              );
+            }
           }
 
           // CỔNG 1: Kiểm tra tồn tại phần tử
@@ -1321,15 +1731,46 @@ async function executePhysicalAction(
 
   const locator = targetFrame.locator(target.selectorPath).first();
 
-  // Cuộn phần tử ra chính giữa màn hình (tránh bị Sticky Header che)
+  // Cuộn phần tử vào tầm nhìn (scrollIntoViewIfNeeded) và căn giữa (tránh bị Sticky Header che)
+  await locator.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
   await locator.evaluate((el) => {
-    el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+    if (typeof (el as any).scrollIntoViewIfNeeded === 'function') {
+      (el as any).scrollIntoViewIfNeeded();
+    } else {
+      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+    }
   }).catch(() => { });
   await waitForUIQuiescence(page, 300, barrier);
 
   if (action.type === 'HOVER') {
     await locator.hover({ timeout: 5000 });
     await waitForUIQuiescence(page, 2000, barrier);
+    return;
+  }
+
+  if (action.type === 'SELECT_OPTION') {
+    const val = action.value || action.targetHint || '';
+    if (target.tag === 'select') {
+      const selLoc = targetFrame.locator(target.selectorPath).first();
+      await selLoc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+      try {
+        await selLoc.selectOption({ label: val }, { timeout: 3000 });
+      } catch {
+        await selLoc.selectOption({ value: val }, { timeout: 3000 });
+      }
+      await selLoc.evaluate((el) => {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }).catch(() => {});
+      await waitForUIQuiescence(page, 500, barrier);
+      return;
+    }
+
+    // Custom Select Trigger (React-Select, Ant Design, Material-UI, Select2)
+    const customRes = await executeCustomDropdownProtocol(page, barrier, target, val);
+    if (!customRes.success) {
+      throw new Error(customRes.error || `Không thể chọn option "${val}" từ custom dropdown`);
+    }
     return;
   }
 
@@ -1393,6 +1834,15 @@ async function executePhysicalAction(
   }
 
   if (action.type === 'CLICK' || action.type === 'SELECT_ITEM') {
+    // Nếu target là Custom Select Trigger và kịch bản có kèm giá trị option cần chọn
+    if (isCustomSelectTrigger(target) && action.value) {
+      const customRes = await executeCustomDropdownProtocol(page, barrier, target, action.value);
+      if (!customRes.success) {
+        throw new Error(customRes.error || `Không thể chọn "${action.value}" từ custom dropdown`);
+      }
+      return;
+    }
+
     // Trường hợp chọn <option> bên trong thẻ <select> native
     if (target.tag === 'option') {
       await locator.evaluate((el) => {

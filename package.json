@@ -11,6 +11,7 @@
     "test:margin": "tsx tests/actor-critic-margin.test.ts",
     "test:dialog": "tsx tests/native-dialog.test.ts",
     "test:tab": "tsx tests/multi-tab.test.ts",
+    "test:virtual-scroll": "tsx tests/virtual-scroll-dropdown.test.ts",
     "test:100": "tsx src/run-100.ts",
     "test:cli": "tsx src/cli.ts",
     "test:demo": "tsx src/cli.ts --case pass",

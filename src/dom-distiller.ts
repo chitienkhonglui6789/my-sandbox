@@ -386,7 +386,7 @@ function distillFrameEvaluator({
     const isCustomInteractive =
       (hasPointerCursor && isSmallLeafWithText) ||
       matchesHintKeyword ||
-      /\b(btn|button|swatch|color-option|variant|cart|checkout|search-btn|card-title)\b/i.test(
+      /\b(btn|button|swatch|color-option|variant|cart|checkout|search-btn|card-title|option|dropdown-item|ant-select|select-option|menu-item|item-option|combobox|select2)\b/i.test(
         rawEl.className?.toString() || ''
       );
 

@@ -12,8 +12,8 @@
 - [x] **Prompt 02**: UI Quiescence Watcher (Network Inflight & DOM Mutation Observer)
 - [x] **Prompt 03**: Kiến trúc Actor-Critic & Safety Margin ($\Delta_{\text{margin}} \ge 20\%$)
 - [x] **Prompt 04**: Native Dialog Interceptor (Alert, Confirm, Prompt, BeforeUnload)
-- [ ] **Prompt 05**: Multi-Tab Manager & Context Switcher
-- [ ] **Prompt 06**: Virtualized Scroll Engine & Floating Portal Dropdown Protocol
+- [x] **Prompt 05**: Multi-Tab Manager & Context Switcher
+- [x] **Prompt 06**: Virtualized Scroll Engine & Floating Portal Dropdown Protocol
 - [ ] **Prompt 07**: Post-Fill Masked Input Integrity & Deadlock Watchdog Circuit Breaker
 - [ ] **Prompt 08**: XAI Decision Audit Trail Logging & Cập nhật Dashboard Web UI
 - [ ] **Prompt 09**: Real-World Stress Benchmark Suite & Validation Toàn diện
@@ -139,8 +139,9 @@ Hãy cập nhật `src/runner.ts` để hiện thực hóa Trụ cột 8 (Điề
 ---
 
 ### PROMPT 06: Virtualized Scroll Engine & Floating Portal Dropdown
-- **Trạng thái:** `[ ] Chưa thực hiện`
-- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts)
+- **Trạng thái:** `[x] Đã hoàn thành (18/11/2026 - 12/12 Unit & Integration Tests Passed)`
+- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts), [src/dom-distiller.ts](file:///e:/SourceCode/autotest/src/dom-distiller.ts)
+- **Bộ test:** [tests/virtual-scroll-dropdown.test.ts](file:///e:/SourceCode/autotest/tests/virtual-scroll-dropdown.test.ts) (12/12 tests PASS)
 - **Mục tiêu:** Xử lý danh sách vô tận (Infinite Scroll / Virtual DOM) và các component Dropdown hiện đại (React-Select, Ant Design, Material-UI).
 
 ```markdown
