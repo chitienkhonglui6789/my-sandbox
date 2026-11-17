@@ -246,7 +246,8 @@ function parseSingleClause(
   }
 
   // 5. CHUYỂN TAB / ĐÓNG TAB (SWITCH_TAB)
-  if (/^(?:chuyển\s+(?:sang\s+)?tab\s+mới|chuyển\s+tab|đóng\s+tab\s+hiện\s+tại|đóng\s+tab)\b/i.test(text)) {
+  if (/^(?:chuyển\s+(?:sang\s+)?tab\s+mới|chuyển\s+tab|đóng\s+tab\s+hiện\s+tại|đóng\s+tab|quay\s+về\s+tab\s+gốc)\b/i.test(text)) {
+    const isClose = /(?:đóng\s+tab)/i.test(text);
     return {
       stepNumber,
       subIndex,
@@ -254,6 +255,7 @@ function parseSingleClause(
       rawStepText,
       subInstruction: text,
       type: 'SWITCH_TAB',
+      tabAction: isClose ? 'CLOSE_TAB' : 'NEW_TAB',
     };
   }
 

@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { chromium, Page } from 'playwright';
+import { chromium, Page, BrowserContext } from 'playwright';
 import {
   AtomicAction,
   CapturedDialog,
@@ -263,6 +263,247 @@ export function clearCapturedDialogs(page: Page): void {
   }
 }
 
+export interface TabSwitchEvent {
+  oldPageUrl: string;
+  newPageUrl: string;
+  newPageTitle: string;
+  timestamp: number;
+  reason: 'OPENED_BY_ACTION' | 'EXPLICIT_SWITCH' | 'CHILD_CLOSED';
+}
+
+export interface MultiTabManagerOptions {
+  onTabSwitched?: (event: TabSwitchEvent) => void;
+  autoSwitchOnNewTab?: boolean;
+}
+
+/**
+ * Trụ cột 8: Multi-Tab Manager & Context Switcher
+ * theo QUY_CHUAN_AI_RESOLVER.md:
+ * - Lắng nghe sự kiện tab mới ở cấp độ Browser Context: context.on('page').
+ * - Tự động đợi tab mới sẵn sàng (domcontentloaded).
+ * - Tự động chuyển con trỏ hoạt động chính (activePage) sang tab mới.
+ * - Log: [TAB SWITCH] Chuyển ngữ cảnh sang Tab mới: ${title} (${url}).
+ * - Quản lý vòng đời tab: Cho phép runner đóng tab con và quay về tab gốc (parentPage).
+ * - Bảo đảm khi chụp màn hình và phân tích element luôn thao tác trên tab đang active.
+ */
+export class MultiTabManager {
+  private context: BrowserContext;
+  private parentPage: Page;
+  private activePage: Page;
+  private switchHistory: TabSwitchEvent[] = [];
+  private pendingLogMessages: string[] = [];
+  private options: MultiTabManagerOptions;
+  private pendingTransitions: Promise<void>[] = [];
+
+  constructor(
+    context: BrowserContext,
+    initialPage: Page,
+    options: MultiTabManagerOptions = {}
+  ) {
+    this.context = context;
+    this.parentPage = initialPage;
+    this.activePage = initialPage;
+    this.options = { autoSwitchOnNewTab: true, ...options };
+    (context as any).__multiTabManager = this;
+    this.setupListener();
+  }
+
+  private setupListener(): void {
+    this.context.on('page', (newPage) => {
+      const transition = (async () => {
+        try {
+          // Đảm bảo tab mới có helper __name và barrier / dialog interceptor
+          attachDialogInterceptor(newPage);
+          const newBarrier = getOrCreateBarrier(newPage);
+
+          await newPage.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
+          await newBarrier.ensureInPageObserver().catch(() => {});
+
+          if (this.options.autoSwitchOnNewTab !== false) {
+            const oldUrl = this.activePage ? this.activePage.url() : '';
+            await newPage.bringToFront().catch(() => {});
+            this.activePage = newPage;
+
+            const title = (await newPage.title().catch(() => '')) || 'Tab mới';
+            const url = newPage.url();
+            const logMsg = `[TAB SWITCH] Chuyển ngữ cảnh sang Tab mới: ${title} (${url})`;
+            this.pendingLogMessages.push(logMsg);
+
+            const event: TabSwitchEvent = {
+              oldPageUrl: oldUrl,
+              newPageUrl: url,
+              newPageTitle: title,
+              timestamp: Date.now(),
+              reason: 'OPENED_BY_ACTION',
+            };
+            this.switchHistory.push(event);
+            this.options.onTabSwitched?.(event);
+          }
+
+          // Lắng nghe sự kiện tab đóng ngoài ý muốn hoặc do web tự close()
+          newPage.on('close', async () => {
+            if (this.activePage === newPage) {
+              const remaining = this.getOpenPages();
+              this.activePage = remaining.length > 0 ? remaining[remaining.length - 1] : this.parentPage;
+              if (!this.activePage.isClosed()) {
+                await this.activePage.bringToFront().catch(() => {});
+                const logMsg = `[TAB SWITCH] Tab con đã đóng, chuyển ngữ cảnh về: ${this.activePage.url()}`;
+                this.pendingLogMessages.push(logMsg);
+                const event: TabSwitchEvent = {
+                  oldPageUrl: newPage.url(),
+                  newPageUrl: this.activePage.url(),
+                  newPageTitle: (await this.activePage.title().catch(() => '')) || '',
+                  timestamp: Date.now(),
+                  reason: 'CHILD_CLOSED',
+                };
+                this.switchHistory.push(event);
+                this.options.onTabSwitched?.(event);
+              }
+            }
+          });
+        } catch {
+          // ignore
+        }
+      })();
+
+      this.pendingTransitions.push(transition);
+      transition.finally(() => {
+        const idx = this.pendingTransitions.indexOf(transition);
+        if (idx !== -1) {
+          this.pendingTransitions.splice(idx, 1);
+        }
+      });
+    });
+  }
+
+  public async waitForPendingTransitions(timeoutMs = 3000): Promise<void> {
+    // Cho phép event loop đón sự kiện context.on('page') từ Chromium IPC
+    await new Promise((r) => setTimeout(r, 200));
+    if (this.pendingTransitions.length === 0) return;
+    await Promise.race([
+      Promise.all([...this.pendingTransitions]),
+      new Promise((r) => setTimeout(r, timeoutMs)),
+    ]);
+  }
+
+  public async waitForPageCount(expectedCount: number, timeoutMs = 5000): Promise<void> {
+    const start = Date.now();
+    while (this.getOpenPages().length < expectedCount && Date.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await this.waitForPendingTransitions(timeoutMs);
+  }
+
+  public getActivePage(): Page {
+    if (this.activePage.isClosed()) {
+      const openPages = this.context.pages().filter((p) => !p.isClosed());
+      this.activePage = openPages.length > 0 ? openPages[openPages.length - 1] : this.parentPage;
+    }
+    return this.activePage;
+  }
+
+  public getParentPage(): Page {
+    return this.parentPage;
+  }
+
+  public getOpenPages(): Page[] {
+    return this.context.pages().filter((p) => !p.isClosed());
+  }
+
+  public getSwitchHistory(): TabSwitchEvent[] {
+    return [...this.switchHistory];
+  }
+
+  public consumePendingLogMessages(): string[] {
+    const list = [...this.pendingLogMessages];
+    this.pendingLogMessages = [];
+    return list;
+  }
+
+  public async switchToTab(targetPage: Page, reason: TabSwitchEvent['reason'] = 'EXPLICIT_SWITCH'): Promise<void> {
+    if (targetPage.isClosed()) return;
+    const oldUrl = this.activePage.url();
+    await targetPage.bringToFront().catch(() => {});
+    this.activePage = targetPage;
+    const title = (await targetPage.title().catch(() => '')) || '';
+    const url = targetPage.url();
+    const logMsg = `[TAB SWITCH] Chuyển ngữ cảnh sang Tab: ${title} (${url})`;
+    this.pendingLogMessages.push(logMsg);
+
+    const event: TabSwitchEvent = {
+      oldPageUrl: oldUrl,
+      newPageUrl: url,
+      newPageTitle: title,
+      timestamp: Date.now(),
+      reason,
+    };
+    this.switchHistory.push(event);
+    this.options.onTabSwitched?.(event);
+  }
+
+  public async switchToParent(): Promise<void> {
+    if (!this.parentPage.isClosed()) {
+      await this.switchToTab(this.parentPage, 'EXPLICIT_SWITCH');
+    }
+  }
+
+  public async switchToLatestTab(): Promise<void> {
+    const pages = this.getOpenPages();
+    if (pages.length > 0) {
+      const latest = pages[pages.length - 1];
+      if (latest !== this.activePage) {
+        await this.switchToTab(latest, 'EXPLICIT_SWITCH');
+      }
+    }
+  }
+
+  public async closeCurrentTab(): Promise<void> {
+    const isParent = this.activePage === this.parentPage;
+    const current = this.activePage;
+
+    if (!isParent && !current.isClosed()) {
+      const oldUrl = current.url();
+      await current.close().catch(() => {});
+      await this.switchToParent();
+      const logMsg = `[TAB SWITCH] Đã đóng tab con (${oldUrl}) và quay về Tab gốc: ${this.parentPage.url()}`;
+      this.pendingLogMessages.push(logMsg);
+    }
+  }
+
+  public getAllCapturedDialogs(): CapturedDialog[] {
+    const list: CapturedDialog[] = [];
+    const seen = new Set<CapturedDialog>();
+    for (const p of this.context.pages()) {
+      for (const d of getCapturedDialogs(p)) {
+        if (!seen.has(d)) {
+          seen.add(d);
+          list.push(d);
+        }
+      }
+    }
+    return list.sort((a, b) => a.timestamp - b.timestamp);
+  }
+}
+
+const contextTabManagerMap = new WeakMap<BrowserContext, MultiTabManager>();
+
+export function attachMultiTabManager(
+  context: BrowserContext,
+  initialPage: Page,
+  options?: MultiTabManagerOptions
+): MultiTabManager {
+  let mgr = contextTabManagerMap.get(context) || (context as any).__multiTabManager;
+  if (!mgr) {
+    mgr = new MultiTabManager(context, initialPage, options);
+    contextTabManagerMap.set(context, mgr);
+  }
+  return mgr;
+}
+
+export function getTabManager(context: BrowserContext): MultiTabManager | undefined {
+  return contextTabManagerMap.get(context) || (context as any).__multiTabManager;
+}
+
 const pageBarrierMap = new WeakMap<Page, ActionSettlementBarrier>();
 
 export function getOrCreateBarrier(page: Page): ActionSettlementBarrier {
@@ -353,6 +594,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
   });
 
   const page = await context.newPage();
+  const tabManager = attachMultiTabManager(context, page);
   const dialogInterceptor = attachDialogInterceptor(page);
   const barrier = getOrCreateBarrier(page);
 
@@ -382,7 +624,18 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
       const nextRawStep = compiled.rawSteps[stepIndex + 1];
       const nextSubActions = nextRawStep ? stepGroups.get(nextRawStep.stepNumber) || [] : [];
 
-      dialogInterceptor.setCurrentStepContext({
+      await tabManager.waitForPendingTransitions(1000);
+      const preStepTabLogs = tabManager.consumePendingLogMessages();
+      if (preStepTabLogs.length > 0) {
+        subDetails.push(...preStepTabLogs);
+      }
+
+      const activePage = tabManager.getActivePage();
+      const activeBarrier = getOrCreateBarrier(activePage);
+      const activeDialogInterceptor = attachDialogInterceptor(activePage);
+      await activeBarrier.ensureInPageObserver().catch(() => {});
+
+      activeDialogInterceptor.setCurrentStepContext({
         stepNumber: stepNum,
         stepText: rawStep.text,
         subActions,
@@ -391,11 +644,23 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
       });
 
       // Đảm bảo UI tĩnh trước khi thực hiện bước mới
-      await waitForUIQuiescence(page, 7000, barrier);
+      await waitForUIQuiescence(activePage, 7000, activeBarrier);
 
       for (let subIdx = 0; subIdx < subActions.length; subIdx++) {
         const action = subActions[subIdx];
-        dialogInterceptor.setCurrentStepContext({
+
+        await tabManager.waitForPendingTransitions(800);
+        const midActionTabLogs = tabManager.consumePendingLogMessages();
+        if (midActionTabLogs.length > 0) {
+          subDetails.push(...midActionTabLogs);
+        }
+
+        const currentActivePage = tabManager.getActivePage();
+        const currentBarrier = getOrCreateBarrier(currentActivePage);
+        const currentDialogInterceptor = attachDialogInterceptor(currentActivePage);
+        await currentBarrier.ensureInPageObserver().catch(() => {});
+
+        currentDialogInterceptor.setCurrentStepContext({
           stepNumber: stepNum,
           stepText: rawStep.text,
           subActions,
@@ -403,76 +668,106 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
           nextStepText: nextRawStep?.text,
           nextSubActions,
         });
+
         // --- LOẠI 1: BƯỚC CHỜ (WAIT) ---
         if (action.type === 'WAIT') {
           const ms = action.waitMs || 1000;
           await new Promise((r) => setTimeout(r, ms));
-          await waitForUIQuiescence(page, 7000, barrier);
+          await waitForUIQuiescence(tabManager.getActivePage(), 7000, getOrCreateBarrier(tabManager.getActivePage()));
           subDetails.push(`Đã chờ ${ms}ms`);
           continue;
         }
 
         // --- LOẠI 2: CUỘN TRANG (SCROLL) ---
         if (action.type === 'SCROLL') {
+          const p = tabManager.getActivePage();
+          const b = getOrCreateBarrier(p);
           if (action.scrollDirection === 'BOTTOM') {
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+            await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
             subDetails.push('Đã cuộn xuống cuối trang');
           } else if (action.scrollDirection === 'TOP') {
-            await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+            await p.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
             subDetails.push('Đã cuộn lên đầu trang');
           } else if (action.scrollDirection === 'UP') {
             const amt = action.scrollAmount || 600;
-            await page.evaluate((y) => window.scrollBy({ top: -y, behavior: 'smooth' }), amt).catch(() => {});
+            await p.evaluate((y) => window.scrollBy({ top: -y, behavior: 'smooth' }), amt).catch(() => {});
             subDetails.push(`Đã cuộn lên ${amt}px`);
           } else {
             const amt = action.scrollAmount || 600;
-            await page.evaluate((y) => window.scrollBy({ top: y, behavior: 'smooth' }), amt).catch(() => {});
+            await p.evaluate((y) => window.scrollBy({ top: y, behavior: 'smooth' }), amt).catch(() => {});
             subDetails.push(`Đã cuộn xuống ${amt}px`);
           }
-          await waitForUIQuiescence(page, 2000, barrier);
+          await waitForUIQuiescence(p, 2000, b);
           continue;
         }
 
         // --- LOẠI 3: NHẤN PHÍM BÀN PHÍM (PRESS_KEY) ---
         if (action.type === 'PRESS_KEY') {
+          const p = tabManager.getActivePage();
+          const b = getOrCreateBarrier(p);
           const key = action.keyName || 'Enter';
-          await page.keyboard.press(key);
-          await waitForUIQuiescence(page, 3000, barrier);
+          await p.keyboard.press(key);
+          await waitForUIQuiescence(p, 3000, b);
           subDetails.push(`Đã nhấn phím ${key}`);
           continue;
         }
 
         // --- LOẠI 4: QUAY LẠI / TẢI LẠI TRANG (NAVIGATE_BACK / RELOAD) ---
         if (action.type === 'NAVIGATE_BACK') {
-          await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {});
-          await waitForUIQuiescence(page, 5000, barrier);
+          const p = tabManager.getActivePage();
+          const b = getOrCreateBarrier(p);
+          await p.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {});
+          await waitForUIQuiescence(p, 5000, b);
           subDetails.push('Đã quay lại trang trước');
           continue;
         }
         if (action.type === 'RELOAD') {
-          await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
-          await waitForUIQuiescence(page, 5000, barrier);
+          const p = tabManager.getActivePage();
+          const b = getOrCreateBarrier(p);
+          await p.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+          await waitForUIQuiescence(p, 5000, b);
           subDetails.push('Đã tải lại trang');
           continue;
         }
 
-        // --- LOẠI 5: CHUYỂN TAB (SWITCH_TAB) ---
+        // --- LOẠI 5: CHUYỂN TAB / ĐÓNG TAB (SWITCH_TAB) ---
         if (action.type === 'SWITCH_TAB') {
-          const pages = context.pages();
-          if (pages.length > 1) {
-            const targetPage = pages[pages.length - 1] === page ? pages[0] : pages[pages.length - 1];
-            await targetPage.bringToFront().catch(() => {});
-            subDetails.push(`Đã chuyển sang tab: ${targetPage.url()}`);
+          if (action.tabAction === 'CLOSE_TAB') {
+            await tabManager.closeCurrentTab();
+            const logs = tabManager.consumePendingLogMessages();
+            if (logs.length > 0) {
+              subDetails.push(...logs);
+            } else {
+              subDetails.push(`Đã đóng tab con và chuyển về tab gốc: ${tabManager.getActivePage().url()}`);
+            }
           } else {
-            subDetails.push('Chỉ có 1 tab đang mở');
+            const openPages = tabManager.getOpenPages();
+            if (openPages.length > 1) {
+              const current = tabManager.getActivePage();
+              const otherPages = openPages.filter((p) => p !== current);
+              const targetPage = otherPages.length > 0 ? otherPages[otherPages.length - 1] : openPages[0];
+              await tabManager.switchToTab(targetPage);
+              const logs = tabManager.consumePendingLogMessages();
+              if (logs.length > 0) {
+                subDetails.push(...logs);
+              } else {
+                subDetails.push(`Đã chuyển sang tab: ${targetPage.url()}`);
+              }
+            } else {
+              subDetails.push('Chỉ có 1 tab đang mở');
+            }
           }
+          const curP = tabManager.getActivePage();
+          const curB = getOrCreateBarrier(curP);
+          await waitForUIQuiescence(curP, 3000, curB);
           continue;
         }
 
         // --- LOẠI 5.1: XỬ LÝ HỘP THOẠI POPUP (HANDLE_DIALOG) ---
         if (action.type === 'HANDLE_DIALOG') {
           const targetAction = action.dialogAction || 'ACCEPT';
-          const lastDialog = dialogInterceptor.getLastDialog();
+          const allCaptured = tabManager.getAllCapturedDialogs();
+          const lastDialog = allCaptured.length > 0 ? allCaptured[allCaptured.length - 1] : undefined;
           if (lastDialog) {
             subDetails.push(
               `Đã xử lý hộp thoại [${lastDialog.type}]: "${lastDialog.message}" (${targetAction === 'ACCEPT' ? 'Chấp nhận' : 'Hủy'})`
@@ -485,20 +780,22 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
         // --- LOẠI 6: KIỂM TRA ĐƯỜNG DẪN URL (ASSERT_URL) ---
         if (action.type === 'ASSERT_URL') {
+          const p = tabManager.getActivePage();
+          const b = getOrCreateBarrier(p);
           const expectedUrl = action.expectedUrlPart || '';
-          const ok = await barrier.verifyExpectedUrl(expectedUrl, 8000);
+          const ok = await b.verifyExpectedUrl(expectedUrl, 8000);
           if (!ok) {
-            const reasonDetail = `Sai URL: Kỳ vọng đường dẫn chứa "${expectedUrl}" nhưng URL hiện tại là "${page.url()}".`;
+            const reasonDetail = `Sai URL: Kỳ vọng đường dẫn chứa "${expectedUrl}" nhưng URL hiện tại là "${p.url()}".`;
             const failShotName = `${prefix}fail_step_${stepNum}.png`;
             const failShotPath = path.join(outputDir, failShotName);
 
             await drawStatusBannerOnPage(
-              page,
+              p,
               'FAILED',
               `BƯỚC ${stepNum} FAILED: URL không chứa "${expectedUrl}"`,
               null
             );
-            await page.screenshot({ path: failShotPath, fullPage: false });
+            await p.screenshot({ path: failShotPath, fullPage: false });
 
             logs.push({
               step: stepNum,
@@ -528,10 +825,13 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
         // --- TRƯỜNG HỢP 1: BƯỚC KIỂM TRA NỘI DUNG (ASSERT_TEXT) ---
         if (action.type === 'ASSERT_TEXT') {
+          const p = tabManager.getActivePage();
+          const b = getOrCreateBarrier(p);
           const expected = action.expectedText || '';
 
           // Kiểm tra xem nội dung kỳ vọng có xuất hiện trong các Native Dialogs (alert/confirm/prompt) đã bắt không (0ms Fast-Path)
-          const matchingDialog = dialogInterceptor.findDialog((d) =>
+          const allCaptured = tabManager.getAllCapturedDialogs();
+          const matchingDialog = allCaptured.find((d) =>
             d.message.toLowerCase().includes(expected.toLowerCase())
           );
           if (matchingDialog) {
@@ -541,11 +841,12 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             continue;
           }
 
-          const checkRes = await barrier.verifyExpectedText(expected, 16000);
+          const checkRes = await b.verifyExpectedText(expected, 16000);
 
           if (!checkRes.matched) {
             // Kiểm tra lại lần nữa phòng trường hợp dialog vừa xuất hiện trong lúc chờ
-            const lateMatchingDialog = dialogInterceptor.findDialog((d) =>
+            const lateCaptured = tabManager.getAllCapturedDialogs();
+            const lateMatchingDialog = lateCaptured.find((d) =>
               d.message.toLowerCase().includes(expected.toLowerCase())
             );
             if (lateMatchingDialog) {
@@ -556,8 +857,8 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             }
 
             // AI-First Semantic Oracle: Thử đối soát ngữ nghĩa qua Gemini Multimodal trước khi kết luận FAILED
-            const pageText = await page.evaluate(() => document.body.innerText || '').catch(() => '');
-            const shotBuf = await page.screenshot({ fullPage: false }).catch(() => null);
+            const pageText = await p.evaluate(() => document.body.innerText || '').catch(() => '');
+            const shotBuf = await p.screenshot({ fullPage: false }).catch(() => null);
             const shotBase64 = shotBuf ? shotBuf.toString('base64') : undefined;
 
             const aiVerify = await LLMBridge.semanticVerifyWithAI(expected, pageText, shotBase64);
@@ -583,12 +884,12 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             const failShotPath = path.join(outputDir, failShotName);
 
             await drawStatusBannerOnPage(
-              page,
+              p,
               'FAILED',
               `BƯỚC ${stepNum} FAILED: ${autopsy.rootCause || `Không thấy "${expected}"`}`,
               null
             );
-            await page.screenshot({ path: failShotPath, fullPage: false });
+            await p.screenshot({ path: failShotPath, fullPage: false });
 
             logs.push({
               step: stepNum,
@@ -630,23 +931,27 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
         let latestPreShotBase64: string | undefined = undefined;
 
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          const iterPage = tabManager.getActivePage();
+          const iterBarrier = getOrCreateBarrier(iterPage);
+          await iterBarrier.ensureInPageObserver().catch(() => {});
+
           if (attempt > 0) {
             const backoffMs = RETRY_BACKOFF_MS[attempt - 1];
             await new Promise((r) => setTimeout(r, backoffMs));
-            await waitForUIQuiescence(page, 7000, barrier);
+            await waitForUIQuiescence(iterPage, 7000, iterBarrier);
           }
 
           lastCandidates = await distillPageDOM(
-            page,
+            iterPage,
             action.targetHint,
             action.contextHint
           );
 
-          const preShotBuf = await page.screenshot({ fullPage: false }).catch(() => null);
+          const preShotBuf = await iterPage.screenshot({ fullPage: false }).catch(() => null);
           latestPreShotBase64 = preShotBuf ? preShotBuf.toString('base64') : undefined;
 
           resolved = await resolveTargetCandidate(
-            page.url(),
+            iterPage.url(),
             action,
             lastCandidates,
             latestPreShotBase64
@@ -654,15 +959,15 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
           // Hỗ trợ lazy-loading / danh sách ảo: nếu là SELECT_ITEM và chưa thấy, thử cuộn nhẹ
           if (!resolved.candidate && action.type === 'SELECT_ITEM' && (action.itemIndex || 1) > 1) {
-            await page.evaluate(() => window.scrollBy(0, 350)).catch(() => { });
-            await waitForUIQuiescence(page, 500, barrier);
+            await iterPage.evaluate(() => window.scrollBy(0, 350)).catch(() => { });
+            await waitForUIQuiescence(iterPage, 500, iterBarrier);
             lastCandidates = await distillPageDOM(
-              page,
+              iterPage,
               action.targetHint,
               action.contextHint
             );
             resolved = await resolveTargetCandidate(
-              page.url(),
+              iterPage.url(),
               action,
               lastCandidates,
               latestPreShotBase64
@@ -697,9 +1002,17 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
           // CỔNG 4: Thực thi thao tác vật lý
           try {
-            barrier.resetQuietTimers();
-            await executePhysicalAction(page, barrier, action, target);
+            iterBarrier.resetQuietTimers();
+            await executePhysicalAction(iterPage, iterBarrier, action, target);
             actionExecuted = true;
+
+            // Nếu thao tác vừa thực hiện có khả năng mở tab mới, đợi và cập nhật ngữ cảnh
+            await tabManager.waitForPendingTransitions(1200);
+            const postActionTabLogs = tabManager.consumePendingLogMessages();
+            if (postActionTabLogs.length > 0) {
+              subDetails.push(...postActionTabLogs);
+            }
+
             break; // Thao tác thành công!
           } catch (err: any) {
             executionError = err;
@@ -712,6 +1025,8 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
         // Nếu sau vòng lặp retry mà hành động chưa được thực thi thành công:
         if (!actionExecuted) {
+          const failPage = tabManager.getActivePage();
+
           // Trường hợp 1: Không tìm thấy phần tử (ELEMENT_NOT_FOUND)
           if (!resolved || !resolved.candidate) {
             const availablePreview = lastCandidates
@@ -719,7 +1034,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
               .map((c) => `[${c.tag}: "${c.text || c.nearLabel || c.placeholder || c.name || ''}"]`)
               .join(', ');
 
-            const pageText = await page.evaluate(() => document.body.innerText || '').catch(() => '');
+            const pageText = await failPage.evaluate(() => document.body.innerText || '').catch(() => '');
             const autopsy = await LLMBridge.diagnoseFailureWithAI(
               rawStep.text,
               `Không tìm thấy phần tử "${action.targetHint || action.subInstruction}"`,
@@ -749,12 +1064,12 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             const failShotPath = path.join(outputDir, failShotName);
 
             await drawStatusBannerOnPage(
-              page,
+              failPage,
               'FAILED',
               `BƯỚC ${stepNum} FAILED: ${autopsy.rootCause || `Không tìm thấy "${action.targetHint}"`}`,
               null
             );
-            await page.screenshot({ path: failShotPath, fullPage: false });
+            await failPage.screenshot({ path: failShotPath, fullPage: false });
 
             logs.push({
               step: stepNum,
@@ -782,7 +1097,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
           // Trường hợp 2: Phần tử bị disabled (ELEMENT_DISABLED)
           if (target && target.disabled) {
-            const pageText = await page.evaluate(() => document.body.innerText || '').catch(() => '');
+            const pageText = await failPage.evaluate(() => document.body.innerText || '').catch(() => '');
             const autopsy = await LLMBridge.diagnoseFailureWithAI(
               rawStep.text,
               `Phần tử "${target.text || action.targetHint}" bị khóa (disabled)`,
@@ -798,12 +1113,12 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             const failShotPath = path.join(outputDir, failShotName);
 
             await drawStatusBannerOnPage(
-              page,
+              failPage,
               'FAILED',
               `BƯỚC ${stepNum} FAILED: ${autopsy.rootCause || `Nút "${target.text || action.targetHint}" bị khóa`}`,
               target
             );
-            await page.screenshot({ path: failShotPath, fullPage: false });
+            await failPage.screenshot({ path: failShotPath, fullPage: false });
 
             logs.push({
               step: stepNum,
@@ -830,7 +1145,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
           // Trường hợp 3: Phần tử bị che khuất (ELEMENT_OBSCURED)
           if (target && target.obscured) {
-            const pageText = await page.evaluate(() => document.body.innerText || '').catch(() => '');
+            const pageText = await failPage.evaluate(() => document.body.innerText || '').catch(() => '');
             const autopsy = await LLMBridge.diagnoseFailureWithAI(
               rawStep.text,
               `Phần tử "${target.text || action.targetHint}" bị che bởi "${target.obscuredBy}"`,
@@ -845,12 +1160,12 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             const failShotPath = path.join(outputDir, failShotName);
 
             await drawStatusBannerOnPage(
-              page,
+              failPage,
               'FAILED',
               `BƯỚC ${stepNum} FAILED: ${autopsy.rootCause || `Bị che bởi ${target.obscuredBy}`}`,
               target
             );
-            await page.screenshot({ path: failShotPath, fullPage: false });
+            await failPage.screenshot({ path: failShotPath, fullPage: false });
 
             logs.push({
               step: stepNum,
@@ -896,14 +1211,21 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
         subDetails.push(`${action.type} -> <${target!.tag}> "${targetLabel}"${aiTag}`);
       }
 
-      // Thu thập các dialogs phát sinh trong bước này
-      const stepDialogs = dialogInterceptor.consumePendingStepDialogs();
+      // Thu thập các dialogs phát sinh trong bước này trên activePage
+      const curActiveInterceptor = attachDialogInterceptor(tabManager.getActivePage());
+      const stepDialogs = curActiveInterceptor.consumePendingStepDialogs();
       for (const d of stepDialogs) {
         if (d.warning) {
           subDetails.push(d.warning);
         } else {
           subDetails.push(`[Hộp thoại native ${d.type}]: "${d.message}"`);
         }
+      }
+
+      // Thu thập tab logs cuối bước nếu có
+      const postStepTabLogs = tabManager.consumePendingLogMessages();
+      if (postStepTabLogs.length > 0) {
+        subDetails.push(...postStepTabLogs);
       }
 
       completedSteps++;
@@ -917,20 +1239,21 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
       });
     }
 
-    // Hoàn thành toàn bộ N/N bước -> Chụp ảnh pass_step_N.png
+    // Hoàn thành toàn bộ N/N bước -> Chụp ảnh pass_step_N.png trên activePage
+    const finalPage = tabManager.getActivePage();
     const finalStepNum = compiled.totalSteps;
     const passShotName = `${prefix}pass_step_${finalStepNum}.png`;
     const passShotPath = path.join(outputDir, passShotName);
 
     await drawStatusBannerOnPage(
-      page,
+      finalPage,
       'PASSED',
       `PASSED: Hoàn thành ${completedSteps}/${compiled.totalSteps} bước (Bước cuối #${finalStepNum} OK)`,
       null
     );
-    await page.screenshot({ path: passShotPath, fullPage: false });
+    await finalPage.screenshot({ path: passShotPath, fullPage: false });
 
-    const allCapturedDialogs = dialogInterceptor.getHistory();
+    const allCapturedDialogs = tabManager.getAllCapturedDialogs();
     const warningsCount = allCapturedDialogs.filter((d) => d.warning).length;
     const warningNote = warningsCount > 0 ? ` (Có ${warningsCount} cảnh báo hộp thoại native)` : '';
 
@@ -952,7 +1275,8 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
     const reasonDetail = `Lỗi thực thi tại bước ${failedStep}: ${err?.message || String(err)}`;
 
     try {
-      await page.screenshot({ path: failShotPath, fullPage: false });
+      const errorPage = tabManager ? tabManager.getActivePage() : page;
+      await errorPage.screenshot({ path: failShotPath, fullPage: false });
     } catch {
       // ignore
     }
@@ -969,7 +1293,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
       screenshotPath: failShotPath,
       totalDurationMs: Date.now() - startTime,
       logs,
-      dialogs: dialogInterceptor ? dialogInterceptor.getHistory() : undefined,
+      dialogs: tabManager ? tabManager.getAllCapturedDialogs() : (dialogInterceptor ? dialogInterceptor.getHistory() : undefined),
     };
   } finally {
     await browser.close();

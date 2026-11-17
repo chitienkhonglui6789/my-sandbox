@@ -116,8 +116,9 @@ Hãy cập nhật `src/runner.ts` để hiện thực hóa Trụ cột 7 (Xử l
 ---
 
 ### PROMPT 05: Multi-Tab Manager & Context Switcher
-- **Trạng thái:** `[ ] Chưa thực hiện`
+- **Trạng thái:** `[x] Đã hoàn thành (18/11/2026)`
 - **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts)
+- **Bộ test:** [tests/multi-tab.test.ts](file:///e:/SourceCode/autotest/tests/multi-tab.test.ts) (6/6 tests PASS)
 - **Mục tiêu:** Tự động điều hướng và đồng bộ hóa ngữ cảnh khi click link mở tab mới (`target="_blank"`) hoặc popup đăng nhập SSO.
 
 ```markdown

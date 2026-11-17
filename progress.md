@@ -169,6 +169,29 @@ autotest/
       - API truy xuất & làm sạch lịch sử dialog.
       - Parser DSL `HANDLE_DIALOG` (ACCEPT / DISMISS).
       - E2E Strict Scenario với Native Alert và Assertion thông điệp.
+12. **Triển khai Trụ cột 8 (Multi-Tab Manager & Context Switcher)**:
+    - File triển khai: [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts), [tests/multi-tab.test.ts](file:///e:/SourceCode/autotest/tests/multi-tab.test.ts).
+    - **Lắng nghe sự kiện tab mới ở cấp độ Browser Context (`context.on('page')`)**:
+      - Tự động bắt mọi tab / popup window xuất hiện do click link `target="_blank"`, `window.open()`, OAuth SSO popup, hoặc Payment gateway.
+      - Tự động gắn `ActionSettlementBarrier` và `NativeDialogInterceptor` cho từng tab con ngay khi khởi tạo.
+      - Tự động đợi tab mới sẵn sàng (`newPage.waitForLoadState('domcontentloaded')`).
+      - Tự động gọi `newPage.bringToFront()` và chuyển con trỏ hoạt động chính (`activePage`) sang tab mới.
+      - Ghi log execution chuẩn mực: `[TAB SWITCH] Chuyển ngữ cảnh sang Tab mới: ${title} (${url})`.
+    - **Quản lý vòng đời tab & Cơ chế Fallback an toàn**:
+      - Cho phép runner đóng tab con và chủ động quay về tab gốc (`parentPage`) khi luồng phụ hoàn tất (`closeCurrentTab()`).
+      - Lắng nghe `newPage.on('close')`: Khi tab con bị đóng từ bên ngoài (e.g. `window.close()`), hệ thống tự động phát hiện và chuyển ngữ cảnh về tab gốc an toàn, ngăn ngừa triệt để lỗi tham chiếu đến trang đã bị đóng (Dangling Page Pointer).
+      - Cung cấp các API chuyển tab: `switchToTab(page)`, `switchToParent()`, `switchToLatestTab()`.
+    - **Tích hợp sâu vào `runStrictTestScenario`**:
+      - Mọi hành động tương tác (`CLICK`, `FILL`, `SEARCH`), cuộn trang, kiểm tra nội dung (`ASSERT_TEXT`, `ASSERT_URL`), vẽ status banner và chụp ảnh màn hình bằng chứng luôn được thực hiện chuẩn xác trên tab đang active.
+      - Hỗ trợ câu lệnh DSL `SWITCH_TAB`: `Chuyển tab mới`, `Chuyển tab`, `Đóng tab hiện tại`, `Quay về tab gốc`.
+      - Cơ chế gom dialogs toàn cục qua `tabManager.getAllCapturedDialogs()` giúp Fast-Path xác thực alert/confirm trên mọi tab.
+    - **Nghiệm thu 6/6 Unit & Integration Tests PASSED 100%** trong [tests/multi-tab.test.ts](file:///e:/SourceCode/autotest/tests/multi-tab.test.ts):
+      - Tự động lắng nghe `context.on('page')` và switch activePage khi click link `target="_blank"`.
+      - Quản lý vòng đời tab: Thao tác trên tab con, đóng tab con và tự động quay về tab gốc.
+      - Chuyển tab chủ động bằng `switchToTab`, `switchToParent`, `switchToLatestTab`.
+      - Tự động phục hồi khi tab con bị đóng từ bên ngoài (`newPage.on('close')`).
+      - Bắt trọn vẹn Native Alert xuất hiện trên tab con.
+      - Integration: `runStrictTestScenario` chạy hoàn hảo kịch bản 8 bước chuyển tab, điền dữ liệu tab con, đóng tab con và xác thực tab gốc.
 
 ---
 
@@ -215,6 +238,42 @@ npm run test
 # 5. Chạy test trên SauceDemo (E-commerce chuẩn quốc tế)
 npm run test:cli -- --case saucedemo
 ```
+
+---
+
+## 6. SỔ TAY KỸ THUẬT & CÁC MẸO FIX LỖI QUAN TRỌNG (ENGINEERING GOTCHAS & LESSONS LEARNED)
+*Tổng hợp các bẫy kỹ thuật thực tế đã giải quyết dứt điểm để các phiên phát triển sau không bao giờ lặp lại:*
+
+1. **Lỗi `ReferenceError: __name is not defined` trong `page.evaluate()` / `frame.evaluate()`**:
+   - *Nguyên nhân*: `tsx/esbuild` tự động tiêm helper `__name` để giữ tên hàm khi đóng gói. Trong ngữ cảnh browser context hoặc isolated iframe, biến này không tồn tại khiến script bị crash trắng DOM.
+   - *Cách xử lý dứt điểm*: Luôn tiêm `context.addInitScript(() => { (window as any).__name = (globalThis as any).__name = (fn) => fn; })` và tiêm `var __name = ...` vào mọi frame trước khi evaluate trong [src/dom-distiller.ts](file:///e:/SourceCode/autotest/src/dom-distiller.ts) và [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts).
+
+2. **Lỗi hộp thoại `beforeunload` không kích hoạt trong Chromium**:
+   - *Nguyên nhân*: Tiêu chuẩn bảo mật HTML & Chromium chỉ kích hoạt dialog `beforeunload` khi trang có `transient user activation` (người dùng đã tương tác thật: click, gõ phím) VÀ có nguồn gốc HTTP/HTTPS hợp lệ (không kích hoạt trên `about:blank` hoặc trang tĩnh chưa tương tác).
+   - *Cách xử lý dứt điểm*: Trong test giả lập, bắt buộc phải có thao tác tương tác người dùng (`page.click` / `page.fill`) và chạy qua HTTP Server thật trước khi điều hướng.
+
+3. **Lỗi xung đột nhiều listener `page.on('dialog')` gây `Dialog is already handled`**:
+   - *Nguyên nhân*: Nếu nhiều module (như `settlement-barrier` và `runner`) cùng đăng ký `page.on('dialog')` và cùng gọi `dialog.accept()`, Playwright sẽ ném ngoại lệ `Error: Cannot accept dialog which is already handled`.
+   - *Cách xử lý dứt điểm*: Tập trung toàn bộ quyền xử lý dialog vào một module duy nhất `NativeDialogInterceptor`. Trong [src/settlement-barrier.ts](file:///e:/SourceCode/autotest/src/settlement-barrier.ts), kiểm tra nếu đã có `__nativeDialogInterceptor` thì lập tức nhường quyền, không can thiệp.
+
+4. **Tối ưu hóa thời gian chạy `ASSERT_TEXT` đối với hộp thoại Native (0ms Fast-Path)**:
+   - *Nguyên nhân*: Chữ trong `alert()`, `confirm()`, `prompt()` là Native OS UI, hoàn toàn không nằm trong cây DOM (`document.body.innerText`). Nếu gọi `barrier.verifyExpectedText` trước, hệ thống sẽ polling cây DOM liên tục 16 giây gây lag nghiêm trọng.
+   - *Cách xử lý dứt điểm*: Luôn kiểm tra nhanh trong `dialogInterceptor.findDialog(...)` trước (0ms). Nếu có thông điệp khớp thì xác nhận PASS ngay lập tức mà không phải chờ đợi timeout DOM.
+
+5. **Quy tắc chạy test nhanh khi phát triển (Tránh nghẽn hàng đợi)**:
+   - Chỉ chạy bài test unit tương ứng với prompt đang làm (ví dụ: `npm run test:dialog`). Tuyệt đối không chạy lệnh `npm run test` (`--all`) trong các bước trung gian vì lệnh này khởi động toàn bộ suite và gọi API Gemini bên ngoài gây tốn 40 - 60s không cần thiết.
+
+6. **Race condition giữa hành động Click mở Tab mới và sự kiện `context.on('page')`**:
+   - *Nguyên nhân*: Khi click link `<a target="_blank">` hoặc nút gọi `window.open()`, sự kiện `context.on('page')` được gửi qua IPC bất đồng bộ giữa Playwright và Chromium. Nếu runner lập tức kiểm tra danh sách `pendingTransitions` ngay tại thời điểm thao tác click vừa xong (0ms delay), event loop chưa kịp phân phối sự kiện, dẫn đến mảng transition rỗng và runner tưởng không có tab mới nên bỏ qua việc chờ, gây sai lệch `activePage`.
+   - *Cách xử lý dứt điểm*: Trong `waitForPendingTransitions()`, luôn chèn một khoảng nghỉ ngắn (150ms - 200ms) trước khi kiểm tra độ dài `pendingTransitions` để Node.js I/O loop đón trọn vẹn event `page`. Đồng thời cung cấp phương thức `waitForPageCount(expectedCount, timeoutMs)` để đảm bảo chắc chắn số tab đã tăng lên trước khi bước kế tiếp bắt đầu.
+
+7. **Bẫy tham chiếu trang đã đóng (Dangling Page Pointer) khi Tab con tự đóng**:
+   - *Nguyên nhân*: Trong luồng thực tế (e.g. cổng thanh toán, popup OAuth, hoặc web gọi `window.close()`), tab con có thể đóng bất cứ lúc nào. Nếu runner tiếp tục giữ tham chiếu đến instance `page` cũ, Playwright sẽ ném ngoại lệ nghiêm trọng: `Error: Target page, context or browser has been closed`.
+   - *Cách xử lý dứt điểm*: Luôn lắng nghe `newPage.on('close')` ngay khi tab mới xuất hiện. Khi tab active bị đóng, tự động chuyển `activePage` về `parentPage` (hoặc tab mở gần nhất). Ngoài ra, trong phương thức `getActivePage()`, luôn có lớp bảo vệ `if (this.activePage.isClosed())` để tự động fallback về tab còn sống, không bao giờ để lộ con trỏ rác.
+
+8. **Đồng bộ hóa Barrier và Dialog Interceptor xuyên suốt Multi-Tab**:
+   - *Nguyên nhân*: Mỗi tab trình duyệt sở hữu DOM Tree, Network Request Stack và Dialog Event hoàn toàn cô lập. Nếu chỉ tiêm `NativeDialogInterceptor` và `ActionSettlementBarrier` trên tab ban đầu, các alert xuất hiện trên tab con sẽ bị bỏ sót, khiến trình duyệt bị treo cứng vĩnh viễn (hang execution loop).
+   - *Cách xử lý dứt điểm*: Trong listener `context.on('page')`, ngay khi tab con được khởi tạo, tự động tiêm `attachDialogInterceptor(newPage)` và `getOrCreateBarrier(newPage)`. Đồng thời cung cấp API `tabManager.getAllCapturedDialogs()` gom toàn bộ dialogs của mọi tab theo thứ tự thời gian (`timestamp`), giúp Fast-Path `ASSERT_TEXT` đối soát chính xác thông điệp dù nó xuất hiện ở tab nào.
 
 ---
 *Tài liệu này được duy trì liên tục để phục vụ chuyển giao công việc giữa các kỹ sư phát triển.*
