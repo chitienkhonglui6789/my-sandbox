@@ -1,0 +1,24 @@
+{
+  "name": "Kịch bản E-commerce Thực Tế Hoàn Chỉnh (15 Bước Chuẩn)",
+  "url": "https://www.saucedemo.com",
+  "description": "Kiểm thử luồng mua sắm trực tuyến thực tế: Đăng nhập -> Duyệt danh mục -> Chi tiết sản phẩm -> Thêm vào giỏ -> Xem giỏ hàng -> Xác nhận giỏ -> Thanh toán checkout -> Điền thông tin giao hàng -> Xác nhận tổng quan đơn hàng -> Hoàn tất đặt hàng",
+  "version": "1.0.0",
+  "totalSteps": 15,
+  "steps": [
+    "(1) Điền \"standard_user\" vào ô \"Username\"",
+    "(2) Điền \"secret_sauce\" vào ô \"Password\"",
+    "(3) Bấm \"Login\"",
+    "(4) Kiểm tra hiện chữ \"Products\"",
+    "(5) Chọn sản phẩm thứ 1",
+    "(6) Bấm \"Add to cart\"",
+    "(7) Bấm \"shopping_cart_link\"",
+    "(8) Kiểm tra hiện chữ \"Your Cart\"",
+    "(9) Bấm \"Checkout\"",
+    "(10) Điền \"Nguyen\" vào ô \"First Name\"",
+    "(11) Điền \"Van A\" vào ô \"Last Name\"",
+    "(12) Điền \"100000\" vào ô \"Zip/Postal Code\"",
+    "(13) Bấm \"Continue\"",
+    "(14) Bấm \"Finish\"",
+    "(15) Kiểm tra hiện chữ \"Thank you for your order!\""
+  ]
+}

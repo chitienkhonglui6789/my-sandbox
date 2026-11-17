@@ -1,0 +1,26 @@
+{
+  "name": "Kịch bản E-commerce SauceDemo Chuẩn Hóa Theo QUY_CHUAN_KICH_BAN.md (18 Bước)",
+  "description": "Kiểm thử luồng mua sắm E-commerce hoàn chỉnh: Đăng nhập -> Chọn SP 1 -> Thêm giỏ -> Quay lại -> Chọn SP 2 -> Thêm giỏ -> Giỏ hàng -> Checkout -> Điền thông tin -> Đặt hàng -> Xác nhận",
+  "url": "https://www.saucedemo.com",
+  "version": "1.0.0",
+  "steps": [
+    "(1) Điền \"standard_user\" vào ô \"Username\"",
+    "(2) Điền \"secret_sauce\" vào ô \"Password\"",
+    "(3) Bấm \"Login\"",
+    "(4) Kiểm tra hiện chữ \"Products\"",
+    "(5) Chọn sản phẩm thứ 1",
+    "(6) Bấm \"Add to cart\"",
+    "(7) Quay lại trang trước",
+    "(8) Chọn sản phẩm thứ 2",
+    "(9) Bấm \"Add to cart\"",
+    "(10) Bấm \"shopping_cart_link\"",
+    "(11) Kiểm tra hiện chữ \"Your Cart\"",
+    "(12) Bấm \"Checkout\"",
+    "(13) Điền \"Nguyen\" vào ô \"First Name\"",
+    "(14) Điền \"Van A\" vào ô \"Last Name\"",
+    "(15) Điền \"100000\" vào ô \"Zip/Postal Code\"",
+    "(16) Bấm \"Continue\"",
+    "(17) Bấm \"Finish\"",
+    "(18) Kiểm tra hiện chữ \"Thank you for your order!\""
+  ]
+}

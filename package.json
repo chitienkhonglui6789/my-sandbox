@@ -1,0 +1,25 @@
+{
+  "name": "strict-web-autotest",
+  "version": "1.0.0",
+  "description": "Strict Step-by-Step Natural Language Web Automated Testing Engine (Playwright + CDP + Hybrid DOM Distiller)",
+  "main": "src/cli.ts",
+  "scripts": {
+    "ui": "tsx src/ui-server.ts",
+    "test": "tsx src/cli.ts --all",
+    "test:unit": "tsx tests/element-resolver.test.ts",
+    "test:quiescence": "tsx tests/quiescence-retry.test.ts",
+    "test:dialog": "tsx tests/native-dialog.test.ts",
+    "test:100": "tsx src/run-100.ts",
+    "test:cli": "tsx src/cli.ts",
+    "test:demo": "tsx src/cli.ts --case pass",
+    "test:youtube": "tsx src/cli.ts --case youtube"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

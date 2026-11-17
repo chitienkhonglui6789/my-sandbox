@@ -1,0 +1,16 @@
+# ==============================================================================
+# FILE KỊCH BẢN KIỂM THỬ WEB DÀNH CHO TESTER (VIẾT BẰNG TIẾNG VIỆT TỰ NHIÊN)
+# ==============================================================================
+# Hướng dẫn dành cho Tester:
+# 1. Điền URL trang web cần kiểm tra ở dòng "URL:"
+# 2. Viết các bước thực hiện tuần tự như bên dưới.
+# 3. Lưu file lại (Ctrl + S) rồi nhấp đúp chuột vào file "CHAY_TEST.bat" để chạy!
+# ==============================================================================
+
+URL: https://dantri.com.vn
+
+CÁC BƯỚC:
+(1) Kiểm tra hiện chữ "Dân trí"
+(2) Cuộn xuống 600px
+(3) Bấm "Kinh doanh"
+(4) Kiểm tra URL chứa "kinh-doanh"

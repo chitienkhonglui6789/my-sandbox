@@ -1,0 +1,1040 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { runStrictTestScenario } from './runner';
+import { startRealTrapEcommerceServer } from './demo-server';
+import { TestRunResult } from './types';
+
+export interface Scenario100Item {
+  id: number;
+  category: string;
+  name: string;
+  url: string;
+  expectedOutcome: 'PASSED' | 'FAILED';
+  scenario: string;
+}
+
+export const HUNDRED_SCENARIOS: Scenario100Item[] = [
+  // ==================== NHÓM 1: SAUCEDEMO (1..12) ====================
+  {
+    id: 1,
+    category: 'SauceDemo E-commerce',
+    name: 'Mua 2 sản phẩm liên tiếp (Backpack + Bike Light) & Đặt hàng (15 bước)',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Products" -> (5) Chọn sản phẩm đầu tiên -> (6) Bấm Thêm vào giỏ -> (7) Bấm Quay lại -> (8) Chọn sản phẩm thứ 2 -> (9) Bấm Thêm vào giỏ -> (10) Mở Giỏ hàng -> (11) Kiểm tra hiện chữ "Your Cart" -> (12) Bấm Mua hàng -> (13) Điền họ tên \`Nguyen Van A\`, SĐT \`0987654321\`, địa chỉ \`100000\` rồi bấm Tiếp tục -> (14) Bấm Đặt hàng -> (15) Kiểm tra hiện thông báo "Thank you for your order!"`,
+  },
+  {
+    id: 2,
+    category: 'SauceDemo E-commerce',
+    name: 'Đăng nhập bằng tài khoản bị khóa (locked_out_user)',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Điền tài khoản \`locked_out_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Products" -> (5) Chọn sản phẩm đầu tiên`,
+  },
+  {
+    id: 3,
+    category: 'SauceDemo E-commerce',
+    name: 'Bỏ trống ZipCode khi Thanh toán',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Chọn sản phẩm đầu tiên -> (5) Bấm Thêm vào giỏ -> (6) Mở Giỏ hàng -> (7) Bấm Mua hàng -> (8) Điền họ tên \`Nguyen Van A\`, SĐT \`0987654321\` rồi bấm Tiếp tục -> (9) Kiểm tra hiện chữ "Payment Information"`,
+  },
+  {
+    id: 4,
+    category: 'SauceDemo E-commerce',
+    name: 'Thêm sản phẩm thứ 3 vào giỏ rồi Xóa khỏi giỏ',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Chọn sản phẩm thứ 3 -> (5) Kiểm tra hiện chữ "Sauce Labs Bolt T-Shirt" -> (6) Bấm Thêm vào giỏ -> (7) Mở Giỏ hàng -> (8) Bấm Remove -> (9) Bấm Continue Shopping -> (10) Kiểm tra hiện chữ "Products"`,
+  },
+  {
+    id: 5,
+    category: 'SauceDemo E-commerce',
+    name: 'Đăng nhập bằng problem_user (Bắt lỗi nút Add to cart bị hỏng trên trang chi tiết của problem_user)',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Điền tài khoản \`problem_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Chọn sản phẩm đầu tiên -> (5) Bấm Thêm vào giỏ -> (6) Mở Giỏ hàng -> (7) Bấm Mua hàng -> (8) Điền họ tên \`Nguyen\`, SĐT \`0987654321\`, địa chỉ \`10000\` rồi bấm Tiếp tục -> (9) Kiểm tra hiện chữ "Checkout: Overview"`,
+  },
+  {
+    id: 6,
+    category: 'SauceDemo E-commerce',
+    name: 'Đăng nhập bằng performance_glitch_user (API/UI trễ 5 giây)',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`performance_glitch_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Products" -> (5) Chọn sản phẩm đầu tiên -> (6) Kiểm tra hiện chữ "Sauce Labs Backpack"`,
+  },
+  {
+    id: 7,
+    category: 'SauceDemo E-commerce',
+    name: 'Mở Menu Burger -> Bấm Logout -> Kiểm tra về trang chủ',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Products" -> (5) Bấm "Open Menu" -> (6) Bấm "Logout" -> (7) Kiểm tra hiện chữ "Accepted usernames are:"`,
+  },
+  {
+    id: 8,
+    category: 'SauceDemo E-commerce',
+    name: 'Mua sản phẩm thứ 4 (Fleece Jacket) -> Kiểm tra giá $49.99 -> Đặt hàng',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Chọn sản phẩm thứ 4 -> (5) Kiểm tra hiện chữ "49.99" -> (6) Bấm Thêm vào giỏ -> (7) Mở Giỏ hàng -> (8) Bấm Mua hàng -> (9) Điền họ tên \`Tran B\`, SĐT \`0912345678\`, địa chỉ \`70000\` rồi bấm Tiếp tục -> (10) Bấm Đặt hàng -> (11) Kiểm tra hiện thông báo "Thank you for your order!"`,
+  },
+  {
+    id: 9,
+    category: 'SauceDemo E-commerce',
+    name: 'Chọn lọc giá thấp đến cao trên thẻ <select> native (Price low to high)',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Chọn "Price (low to high)" -> (5) Chọn sản phẩm đầu tiên -> (6) Kiểm tra hiện chữ "Sauce Labs Onesie"`,
+  },
+  {
+    id: 10,
+    category: 'SauceDemo E-commerce',
+    name: 'Bỏ trống Họ tên (First Name) khi Checkout -> Kiểm tra báo lỗi',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Chọn sản phẩm đầu tiên -> (5) Bấm Thêm vào giỏ -> (6) Mở Giỏ hàng -> (7) Bấm Mua hàng -> (8) Bấm Tiếp tục -> (9) Kiểm tra hiện thông báo "Error: First Name is required"`,
+  },
+  {
+    id: 11,
+    category: 'SauceDemo E-commerce',
+    name: 'Điền sai mật khẩu trên SauceDemo -> Kiểm tra thông báo lỗi',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`wrong_pass\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện thông báo "Username and password do not match"`,
+  },
+  {
+    id: 12,
+    category: 'SauceDemo E-commerce',
+    name: 'Thêm vào giỏ rồi bấm Remove ngay tại trang chi tiết sản phẩm',
+    url: 'https://www.saucedemo.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`standard_user\` -> (2) Điền mật khẩu \`secret_sauce\` -> (3) Bấm Đăng nhập -> (4) Chọn sản phẩm đầu tiên -> (5) Bấm Thêm vào giỏ -> (6) Kiểm tra hiện chữ "Remove" -> (7) Bấm Remove -> (8) Kiểm tra hiện chữ "Add to cart"`,
+  },
+
+  // ==================== NHÓM 2: WIKIPEDIA VI & EN (13..24) ====================
+  {
+    id: 13,
+    category: 'Wikipedia',
+    name: 'Wikipedia VI - Tra cứu liên hoàn 3 bài viết (Việt Nam -> Hà Nội -> AI)',
+    url: 'https://vi.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Việt Nam" -> (2) Kiểm tra hiện chữ "Việt Nam" -> (3) Tìm kiếm "Hà Nội" -> (4) Kiểm tra hiện chữ "Hà Nội" -> (5) Tìm kiếm "Trí tuệ nhân tạo" -> (6) Kiểm tra hiện chữ "Trí tuệ nhân tạo"`,
+  },
+  {
+    id: 14,
+    category: 'Wikipedia',
+    name: 'Wikipedia VI - Tra cứu Máy tính -> Mở Xem lịch sử -> Quay lại Đọc',
+    url: 'https://vi.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Máy tính" -> (2) Kiểm tra hiện chữ "Máy tính" -> (3) Bấm Xem lịch sử -> (4) Kiểm tra hiện chữ "Lịch sử" -> (5) Bấm Đọc -> (6) Kiểm tra hiện chữ "Máy tính"`,
+  },
+  {
+    id: 15,
+    category: 'Wikipedia',
+    name: 'Wikipedia VI - Tra cứu Đà Nẵng -> Mở tab Thảo luận',
+    url: 'https://vi.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Đà Nẵng" -> (2) Kiểm tra hiện chữ "Đà Nẵng" -> (3) Bấm Thảo luận -> (4) Kiểm tra hiện chữ "Thảo luận"`,
+  },
+  {
+    id: 16,
+    category: 'Wikipedia',
+    name: 'Wikipedia VI - Tra cứu Hệ điều hành -> Mở Sửa mã nguồn',
+    url: 'https://vi.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Hệ điều hành" -> (2) Kiểm tra hiện chữ "Hệ điều hành" -> (3) Bấm "Sửa mã nguồn" -> (4) Kiểm tra hiện chữ "Hệ điều hành"`,
+  },
+  {
+    id: 17,
+    category: 'Wikipedia',
+    name: 'Wikipedia VI - Tra cứu JavaScript -> Kiểm tra ECMAScript',
+    url: 'https://vi.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "JavaScript" -> (2) Kiểm tra hiện chữ "JavaScript" -> (3) Tìm kiếm "HTML" -> (4) Kiểm tra hiện chữ "HTML"`,
+  },
+  {
+    id: 18,
+    category: 'Wikipedia',
+    name: 'Wikipedia VI - Tra cứu Lịch sử Việt Nam -> Kiểm tra Văn Lang',
+    url: 'https://vi.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Lịch sử Việt Nam" -> (2) Kiểm tra hiện chữ "Việt Nam" -> (3) Tìm kiếm "Nhà Trần" -> (4) Kiểm tra hiện chữ "Nhà Trần"`,
+  },
+  {
+    id: 19,
+    category: 'Wikipedia',
+    name: 'Wikipedia VI - Tìm từ khóa ngẫu nhiên không tồn tại -> Kiểm tra trang Kết quả tìm kiếm',
+    url: 'https://vi.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm " tu_khoa_khong_ton_tai_99887766 " -> (2) Kiểm tra hiện chữ "Kết quả tìm kiếm"`,
+  },
+  {
+    id: 20,
+    category: 'Wikipedia',
+    name: 'Wikipedia VI - Bắt lỗi sai nội dung kiểm tra (ASSERTION_MISMATCH)',
+    url: 'https://vi.wikipedia.org',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Tìm kiếm "Hà Nội" -> (2) Kiểm tra hiện chữ "Thủ đô của Sao Hỏa 999999" -> (3) Tìm kiếm "Việt Nam"`,
+  },
+  {
+    id: 21,
+    category: 'Wikipedia',
+    name: 'Wikipedia EN - Tìm Software testing -> Mở View history',
+    url: 'https://en.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Software testing" -> (2) Kiểm tra hiện chữ "Software testing" -> (3) Bấm "View history" -> (4) Kiểm tra hiện chữ "Revision history"`,
+  },
+  {
+    id: 22,
+    category: 'Wikipedia',
+    name: 'Wikipedia EN - Tìm Test automation -> Tìm Computer science',
+    url: 'https://en.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Test automation" -> (2) Kiểm tra hiện chữ "Test automation" -> (3) Tìm kiếm "Computer science" -> (4) Kiểm tra hiện chữ "Computer science"`,
+  },
+  {
+    id: 23,
+    category: 'Wikipedia',
+    name: 'Wikipedia EN - Tìm Internet -> Mở tab Talk',
+    url: 'https://en.wikipedia.org',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Internet" -> (2) Kiểm tra hiện chữ "Internet" -> (3) Bấm "Talk" -> (4) Kiểm tra hiện chữ "Talk:Internet"`,
+  },
+  {
+    id: 24,
+    category: 'Wikipedia',
+    name: 'Wikipedia EN - Bấm nút không tồn tại trên trang (ELEMENT_NOT_FOUND)',
+    url: 'https://en.wikipedia.org',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Tìm kiếm "Internet" -> (2) Bấm "Nút Mua Hàng Ảo Trên Wiki"`,
+  },
+
+  // ==================== NHÓM 3: BOOKS TO SCRAPE (25..36) ====================
+  {
+    id: 25,
+    category: 'BooksToScrape',
+    name: 'Duyệt danh mục Travel -> Mystery -> Chọn sách đầu tiên',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "All products" -> (2) Bấm Travel -> (3) Kiểm tra hiện chữ "Travel" -> (4) Bấm Mystery -> (5) Kiểm tra hiện chữ "Mystery" -> (6) Chọn sản phẩm đầu tiên -> (7) Kiểm tra hiện chữ "Product Description"`,
+  },
+  {
+    id: 26,
+    category: 'BooksToScrape',
+    name: 'Duyệt danh mục Science -> Chọn sách thứ 2 -> Quay về Home',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Science -> (2) Kiểm tra hiện chữ "Science" -> (3) Chọn sản phẩm thứ 2 -> (4) Kiểm tra hiện chữ "Product Information" -> (5) Bấm Home -> (6) Kiểm tra hiện chữ "All products"`,
+  },
+  {
+    id: 27,
+    category: 'BooksToScrape',
+    name: 'Duyệt danh mục Historical Fiction -> Chọn sách đầu tiên',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm "Historical Fiction" -> (2) Kiểm tra hiện chữ "Historical Fiction" -> (3) Chọn sản phẩm đầu tiên -> (4) Kiểm tra hiện chữ "In stock"`,
+  },
+  {
+    id: 28,
+    category: 'BooksToScrape',
+    name: 'Duyệt Sequential Art -> Phân trang bấm next -> Chọn sách đầu tiên',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm "Sequential Art" -> (2) Kiểm tra hiện chữ "Sequential Art" -> (3) Bấm next -> (4) Kiểm tra hiện chữ "Page 2 of 4" -> (5) Chọn sản phẩm đầu tiên -> (6) Kiểm tra hiện chữ "Product Information"`,
+  },
+  {
+    id: 29,
+    category: 'BooksToScrape',
+    name: 'Duyệt Romance -> Chọn sách thứ 3 -> Bấm Home trên Breadcrumb',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Romance -> (2) Chọn sản phẩm thứ 3 -> (3) Kiểm tra hiện chữ "In stock" -> (4) Bấm Home -> (5) Kiểm tra hiện chữ "All products"`,
+  },
+  {
+    id: 30,
+    category: 'BooksToScrape',
+    name: 'Duyệt Fiction -> Bấm next -> Bấm previous -> Kiểm tra Page 1',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Fiction -> (2) Kiểm tra hiện chữ "Fiction" -> (3) Bấm next -> (4) Kiểm tra hiện chữ "Page 2 of 4" -> (5) Bấm previous -> (6) Kiểm tra hiện chữ "Page 1 of 4"`,
+  },
+  {
+    id: 31,
+    category: 'BooksToScrape',
+    name: 'Duyệt Philosophy -> Chọn sách đầu tiên -> Kiểm tra mã UPC',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Philosophy -> (2) Chọn sản phẩm đầu tiên -> (3) Kiểm tra hiện chữ "UPC"`,
+  },
+  {
+    id: 32,
+    category: 'BooksToScrape',
+    name: 'Duyệt Music -> Chọn sách thứ 2 -> Kiểm tra Number of reviews',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Music -> (2) Chọn sản phẩm thứ 2 -> (3) Kiểm tra hiện chữ "Number of reviews"`,
+  },
+  {
+    id: 33,
+    category: 'BooksToScrape',
+    name: 'Duyệt Default -> Chọn sách thứ 4 -> Kiểm tra Tax',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Default -> (2) Chọn sản phẩm thứ 4 -> (3) Kiểm tra hiện chữ "Tax"`,
+  },
+  {
+    id: 34,
+    category: 'BooksToScrape',
+    name: 'Duyệt Science Fiction -> Chọn sách đầu tiên -> Kiểm tra Availability',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm "Science Fiction" -> (2) Chọn sản phẩm đầu tiên -> (3) Kiểm tra hiện chữ "Availability"`,
+  },
+  {
+    id: 35,
+    category: 'BooksToScrape',
+    name: 'Duyệt Fantasy -> Chọn sách thứ 5 -> Kiểm tra Product Type',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Fantasy -> (2) Chọn sản phẩm thứ 5 -> (3) Kiểm tra hiện chữ "Product Type"`,
+  },
+  {
+    id: 36,
+    category: 'BooksToScrape',
+    name: 'Chọn sản phẩm thứ 99 (vượt quá số lượng trên trang -> ELEMENT_NOT_FOUND)',
+    url: 'https://books.toscrape.com',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Kiểm tra hiện chữ "All products" -> (2) Chọn sản phẩm thứ 99`,
+  },
+
+  // ==================== NHÓM 4: THE-INTERNET HEROKUAPP (37..50) ====================
+  {
+    id: 37,
+    category: 'HerokuApp QA',
+    name: 'Đăng nhập hợp lệ tomsmith & Đăng xuất',
+    url: 'https://the-internet.herokuapp.com/login',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`tomsmith\` -> (2) Điền mật khẩu \`SuperSecretPassword!\` -> (3) Bấm Login -> (4) Kiểm tra hiện thông báo "You logged into a secure area!" -> (5) Bấm Logout -> (6) Kiểm tra hiện thông báo "You logged out of the secure area!"`,
+  },
+  {
+    id: 38,
+    category: 'HerokuApp QA',
+    name: 'Đăng nhập sai mật khẩu -> Kiểm tra thông báo lỗi',
+    url: 'https://the-internet.herokuapp.com/login',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`tomsmith\` -> (2) Điền mật khẩu \`SaiMatKhau\` -> (3) Bấm Login -> (4) Kiểm tra hiện thông báo "Your password is invalid!"`,
+  },
+  {
+    id: 39,
+    category: 'HerokuApp QA',
+    name: 'Đăng nhập sai tài khoản -> Kiểm tra thông báo lỗi',
+    url: 'https://the-internet.herokuapp.com/login',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`tai_khoan_ao\` -> (2) Điền mật khẩu \`SuperSecretPassword!\` -> (3) Bấm Login -> (4) Kiểm tra hiện thông báo "Your username is invalid!"`,
+  },
+  {
+    id: 40,
+    category: 'HerokuApp QA',
+    name: 'Add/Remove Elements - Thêm phần tử động và Xóa',
+    url: 'https://the-internet.herokuapp.com/add_remove_elements/',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Add/Remove Elements" -> (2) Bấm "Add Element" -> (3) Kiểm tra hiện chữ "Delete" -> (4) Bấm "Delete" -> (5) Kiểm tra hiện chữ "Add/Remove Elements"`,
+  },
+  {
+    id: 41,
+    category: 'HerokuApp QA',
+    name: 'Dynamic Loading 1 - Đợi phần tử ẩn hiện ra sau 5s Spinner',
+    url: 'https://the-internet.herokuapp.com/dynamic_loading/1',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Dynamically Loaded Page Elements" -> (2) Bấm Start -> (3) Kiểm tra hiện chữ "Hello World!"`,
+  },
+  {
+    id: 42,
+    category: 'HerokuApp QA',
+    name: 'Dynamic Loading 2 - Đợi phần tử mới render vào DOM sau 5s',
+    url: 'https://the-internet.herokuapp.com/dynamic_loading/2',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Dynamically Loaded Page Elements" -> (2) Bấm Start -> (3) Kiểm tra hiện chữ "Hello World!"`,
+  },
+  {
+    id: 43,
+    category: 'HerokuApp QA',
+    name: 'Dynamic Controls - Xóa bất đồng bộ Checkbox rồi Add lại',
+    url: 'https://the-internet.herokuapp.com/dynamic_controls',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Dynamic Controls" -> (2) Bấm Remove -> (3) Kiểm tra hiện chữ "It's gone!" -> (4) Bấm Add -> (5) Kiểm tra hiện chữ "It's back!"`,
+  },
+  {
+    id: 44,
+    category: 'HerokuApp QA',
+    name: 'Dynamic Controls - Thử điền vào ô Input đang bị khóa (disabled) trước khi bấm Enable',
+    url: 'https://the-internet.herokuapp.com/dynamic_controls',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Kiểm tra hiện chữ "Dynamic Controls" -> (2) Điền input \`Hello\``,
+  },
+  {
+    id: 45,
+    category: 'HerokuApp QA',
+    name: 'Checkboxes - Thao tác với Checkbox không có thẻ <label> bọc ngoài',
+    url: 'https://the-internet.herokuapp.com/checkboxes',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Checkboxes" -> (2) Bấm "checkbox 1"`,
+  },
+  {
+    id: 46,
+    category: 'HerokuApp QA',
+    name: 'Dropdown - Chọn Option 1 trong thẻ <select> native bằng lệnh Chọn',
+    url: 'https://the-internet.herokuapp.com/dropdown',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Dropdown List" -> (2) Chọn "Option 1"`,
+  },
+  {
+    id: 47,
+    category: 'HerokuApp QA',
+    name: 'Inputs - Điền số vào ô <input type="number"> có nhãn Number ở trên',
+    url: 'https://the-internet.herokuapp.com/inputs',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Inputs" -> (2) Điền Number \`12345\``,
+  },
+  {
+    id: 48,
+    category: 'HerokuApp QA',
+    name: 'Status Codes - Bấm 200 -> Kiểm tra -> Quay lại',
+    url: 'https://the-internet.herokuapp.com/status_codes',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Status Codes" -> (2) Bấm 200 -> (3) Kiểm tra hiện chữ "200 status code" -> (4) Bấm here -> (5) Kiểm tra hiện chữ "Status Codes"`,
+  },
+  {
+    id: 49,
+    category: 'HerokuApp QA',
+    name: 'Status Codes - Bấm 404 -> Kiểm tra -> Quay lại',
+    url: 'https://the-internet.herokuapp.com/status_codes',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Status Codes" -> (2) Bấm 404 -> (3) Kiểm tra hiện chữ "404 status code" -> (4) Bấm here -> (5) Kiểm tra hiện chữ "Status Codes"`,
+  },
+  {
+    id: 50,
+    category: 'HerokuApp QA',
+    name: 'Forgot Password - Điền E-mail và bấm Retrieve password',
+    url: 'https://the-internet.herokuapp.com/forgot_password',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Forgot Password" -> (2) Điền "E-mail" \`test@example.com\` -> (3) Bấm "Retrieve password" -> (4) Kiểm tra hiện chữ "Your e-mail's been sent!"`,
+  },
+
+  // ==================== NHÓM 5: QUOTES TO SCRAPE (51..62) ====================
+  {
+    id: 51,
+    category: 'QuotesToScrape',
+    name: 'Mở trang Login -> Điền form -> Kiểm tra Logout hiển thị',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Quotes to Scrape" -> (2) Bấm Login -> (3) Điền tài khoản \`admin_user\` -> (4) Điền mật khẩu \`123456\` -> (5) Bấm Login -> (6) Kiểm tra hiện chữ "Logout"`,
+  },
+  {
+    id: 52,
+    category: 'QuotesToScrape',
+    name: 'Đăng nhập xong -> Bấm Logout -> Kiểm tra hiện lại Login',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Login -> (2) Điền tài khoản \`admin_user\` -> (3) Điền mật khẩu \`123456\` -> (4) Bấm Login -> (5) Bấm Logout -> (6) Kiểm tra hiện chữ "Login"`,
+  },
+  {
+    id: 53,
+    category: 'QuotesToScrape',
+    name: 'Lọc theo Tag love -> Chuyển trang Next -> Tag humor',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm love -> (2) Kiểm tra hiện chữ "Viewing tag: love" -> (3) Bấm Next -> (4) Kiểm tra hiện chữ "Viewing tag: love" -> (5) Bấm humor -> (6) Kiểm tra hiện chữ "Viewing tag: humor"`,
+  },
+  {
+    id: 54,
+    category: 'QuotesToScrape',
+    name: 'Lọc Tag inspirational -> Bấm tiêu đề Quotes to Scrape về trang chủ',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm inspirational -> (2) Kiểm tra hiện chữ "Viewing tag: inspirational" -> (3) Bấm "Quotes to Scrape" -> (4) Kiểm tra hiện chữ "Top Ten tags"`,
+  },
+  {
+    id: 55,
+    category: 'QuotesToScrape',
+    name: 'Lọc Tag life -> Bấm (about) xem thông tin tác giả',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm life -> (2) Kiểm tra hiện chữ "Viewing tag: life" -> (3) Bấm "(about)" -> (4) Kiểm tra hiện chữ "Born:"`,
+  },
+  {
+    id: 56,
+    category: 'QuotesToScrape',
+    name: 'Mở trang tác giả Albert Einstein -> Kiểm tra ngày sinh',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Albert Einstein" -> (2) Bấm "(about)" -> (3) Kiểm tra hiện chữ "Albert Einstein" -> (4) Kiểm tra hiện chữ "March 14, 1879"`,
+  },
+  {
+    id: 57,
+    category: 'QuotesToScrape',
+    name: 'Chuyển trang Next -> Bấm Previous quay về trang 1',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Next -> (2) Kiểm tra hiện chữ "Previous" -> (3) Bấm Previous -> (4) Kiểm tra hiện chữ "Albert Einstein"`,
+  },
+  {
+    id: 58,
+    category: 'QuotesToScrape',
+    name: 'Trang render bằng JS (/js/) -> Bấm Next -> Kiểm tra trích dẫn trang 2',
+    url: 'https://quotes.toscrape.com/js/',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Albert Einstein" -> (2) Bấm Next -> (3) Kiểm tra hiện chữ "Marilyn Monroe"`,
+  },
+  {
+    id: 59,
+    category: 'QuotesToScrape',
+    name: 'Trang JS render trễ 10 giây (/js-delayed/) - Kiểm tra ngưỡng chờ mặc định 5s',
+    url: 'https://quotes.toscrape.com/js-delayed/',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Albert Einstein"`,
+  },
+  {
+    id: 60,
+    category: 'QuotesToScrape',
+    name: 'Lọc Tag books -> Bấm Next -> Kiểm tra Previous',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm books -> (2) Kiểm tra hiện chữ "Viewing tag: books" -> (3) Bấm Next -> (4) Kiểm tra hiện chữ "Previous"`,
+  },
+  {
+    id: 61,
+    category: 'QuotesToScrape',
+    name: 'Lọc Tag reading -> Chuyển sang Tag friendship',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm reading -> (2) Kiểm tra hiện chữ "Viewing tag: reading" -> (3) Bấm friendship -> (4) Kiểm tra hiện chữ "Viewing tag: friendship"`,
+  },
+  {
+    id: 62,
+    category: 'QuotesToScrape',
+    name: 'Lọc Tag friends -> Chuyển sang Tag truth -> Tag simile',
+    url: 'https://quotes.toscrape.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm friends -> (2) Kiểm tra hiện chữ "Viewing tag: friends" -> (3) Bấm truth -> (4) Kiểm tra hiện chữ "Viewing tag: truth" -> (5) Bấm simile -> (6) Kiểm tra hiện chữ "Viewing tag: simile"`,
+  },
+
+  // ==================== NHÓM 6: YOUTUBE (63..74) ====================
+  {
+    id: 63,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm Playwright -> Lọc Video -> Mở Video đầu tiên',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Playwright automation tutorial" -> (2) Kiểm tra hiện chữ "Playwright" -> (3) Bấm Video -> (4) Chọn video đầu tiên -> (5) Kiểm tra hiện chữ "Playwright"`,
+  },
+  {
+    id: 64,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm Node.js -> Tìm tiếp TypeScript -> Mở Video đầu tiên',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Node.js tutorial" -> (2) Kiểm tra hiện chữ "Node" -> (3) Tìm kiếm "TypeScript tutorial" -> (4) Kiểm tra hiện chữ "TypeScript" -> (5) Bấm Video -> (6) Chọn video đầu tiên -> (7) Kiểm tra hiện chữ "TypeScript"`,
+  },
+  {
+    id: 65,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm VTV24 -> Chọn video đầu tiên -> Kiểm tra',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "VTV24" -> (2) Kiểm tra hiện chữ "VTV24" -> (3) Chọn video đầu tiên -> (4) Kiểm tra hiện chữ "VTV24"`,
+  },
+  {
+    id: 66,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm JavaScript -> Lọc Video -> Chọn video thứ 2',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "JavaScript tutorial" -> (2) Kiểm tra hiện chữ "JavaScript" -> (3) Bấm Video -> (4) Chọn video thứ 2 -> (5) Kiểm tra hiện chữ "JavaScript"`,
+  },
+  {
+    id: 67,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm ReactJS -> Bấm chip lọc Shorts',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "ReactJS" -> (2) Kiểm tra hiện chữ "React" -> (3) Bấm Shorts -> (4) Kiểm tra hiện chữ "Shorts"`,
+  },
+  {
+    id: 68,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm Next.js -> Mở hộp thoại Bộ lọc (Filters)',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Next.js" -> (2) Kiểm tra hiện chữ "Next" -> (3) Bấm "Bộ lọc" -> (4) Kiểm tra hiện chữ "Ngày tải lên"`,
+  },
+  {
+    id: 69,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm Docker -> Bấm lọc Chưa xem',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Docker tutorial" -> (2) Kiểm tra hiện chữ "Docker" -> (3) Bấm "Chưa xem" -> (4) Kiểm tra hiện chữ "Docker"`,
+  },
+  {
+    id: 70,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm PostgreSQL -> Mở video -> Tìm tiếp Redis',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "PostgreSQL" -> (2) Kiểm tra hiện chữ "PostgreSQL" -> (3) Chọn video đầu tiên -> (4) Tìm kiếm "Redis" -> (5) Kiểm tra hiện chữ "Redis"`,
+  },
+  {
+    id: 71,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm Git and GitHub -> Bấm Video -> Chọn video thứ 3',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Git and GitHub" -> (2) Kiểm tra hiện chữ "Git" -> (3) Bấm Video -> (4) Chọn video thứ 3 -> (5) Kiểm tra hiện chữ "Git"`,
+  },
+  {
+    id: 72,
+    category: 'YouTube Live',
+    name: 'Tìm kiếm Linux -> Bấm lọc Trực tiếp (Live)',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Tìm kiếm "Linux" -> (2) Kiểm tra hiện chữ "Linux" -> (3) Bấm "Trực tiếp" -> (4) Kiểm tra hiện chữ "Linux"`,
+  },
+  {
+    id: 73,
+    category: 'YouTube Live',
+    name: 'Bắt lỗi Không tìm thấy nút bấm ảo trên YouTube',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Tìm kiếm "VTV24" -> (2) Bấm "Nút Đặt Hàng Ảo XYZ"`,
+  },
+  {
+    id: 74,
+    category: 'YouTube Live',
+    name: 'Bắt lỗi Sai nội dung kiểm tra trên YouTube',
+    url: 'https://www.youtube.com',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Tìm kiếm "Kubernetes" -> (2) Kiểm tra hiện chữ "Công thức nấu phở bò 999999"`,
+  },
+
+  // ==================== NHÓM 7: HACKER NEWS & DEMOBLAZE (75..84) ====================
+  {
+    id: 75,
+    category: 'HackerNews & DemoBlaze',
+    name: 'HackerNews - Duyệt newest -> past -> Kiểm tra',
+    url: 'https://news.ycombinator.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Hacker News" -> (2) Bấm newest -> (3) Kiểm tra hiện chữ "Hacker News" -> (4) Bấm past -> (5) Kiểm tra hiện chữ "Stories from"`,
+  },
+  {
+    id: 76,
+    category: 'HackerNews & DemoBlaze',
+    name: 'HackerNews - Duyệt comments -> ask -> show',
+    url: 'https://news.ycombinator.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm comments -> (2) Kiểm tra hiện chữ "Hacker News" -> (3) Bấm ask -> (4) Kiểm tra hiện chữ "Hacker News" -> (5) Bấm show -> (6) Kiểm tra hiện chữ "Show HN"`,
+  },
+  {
+    id: 77,
+    category: 'HackerNews & DemoBlaze',
+    name: 'HackerNews - Mở jobs -> Mở trang login',
+    url: 'https://news.ycombinator.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm jobs -> (2) Kiểm tra hiện chữ "jobs" -> (3) Bấm login -> (4) Kiểm tra hiện chữ "Login"`,
+  },
+  {
+    id: 78,
+    category: 'HackerNews & DemoBlaze',
+    name: 'HackerNews Submit - Bấm submit khi chưa đăng nhập -> Kiểm tra yêu cầu login',
+    url: 'https://news.ycombinator.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Hacker News" -> (2) Bấm submit -> (3) Kiểm tra hiện chữ "You have to be logged in to submit."`,
+  },
+  {
+    id: 79,
+    category: 'HackerNews & DemoBlaze',
+    name: 'DemoBlaze - Duyệt danh mục Phones -> Laptops -> Kiểm tra sản phẩm',
+    url: 'https://www.demoblaze.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "PRODUCT STORE" -> (2) Bấm Phones -> (3) Kiểm tra hiện chữ "Samsung galaxy s6" -> (4) Bấm Laptops -> (5) Kiểm tra hiện chữ "Sony vaio i5"`,
+  },
+  {
+    id: 80,
+    category: 'HackerNews & DemoBlaze',
+    name: 'DemoBlaze - Duyệt danh mục Monitors -> Bấm vào sản phẩm Apple monitor 24',
+    url: 'https://www.demoblaze.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Monitors -> (2) Kiểm tra hiện chữ "Apple monitor 24" -> (3) Bấm "Apple monitor 24" -> (4) Kiểm tra hiện chữ "Product description"`,
+  },
+  {
+    id: 81,
+    category: 'HackerNews & DemoBlaze',
+    name: 'DemoBlaze - Mở Cart -> Bấm Place Order mở Bootstrap Modal',
+    url: 'https://www.demoblaze.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Cart -> (2) Kiểm tra hiện chữ "Products" -> (3) Bấm "Place Order" -> (4) Kiểm tra hiện chữ "Place order"`,
+  },
+  {
+    id: 82,
+    category: 'HackerNews & DemoBlaze',
+    name: 'DemoBlaze - Mở Modal Contact -> Điền Contact Email & Contact Name -> Đóng Modal',
+    url: 'https://www.demoblaze.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm Contact -> (2) Kiểm tra hiện chữ "New message" -> (3) Điền "Contact Email:" \`test@demo.com\` -> (4) Điền "Contact Name:" \`Nguyen Van A\` -> (5) Bấm Close`,
+  },
+  {
+    id: 83,
+    category: 'HackerNews & DemoBlaze',
+    name: 'DemoBlaze - Mở Modal Log in -> Điền Username/Password -> Bấm nút Log in trong Modal (trùng tên với Navbar)',
+    url: 'https://www.demoblaze.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm "Log in" -> (2) Điền "Username:" \`user_test_99\` -> (3) Điền "Password:" \`123456\` -> (4) Bấm "Log in"`,
+  },
+  {
+    id: 84,
+    category: 'HackerNews & DemoBlaze',
+    name: 'DemoBlaze - Mở Modal About us -> Kiểm tra -> Bấm Close (có 3 nút Close trùng tên ở 3 Modal)',
+    url: 'https://www.demoblaze.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm "About us" -> (2) Kiểm tra hiện chữ "About us" -> (3) Bấm Close`,
+  },
+
+  // ==================== NHÓM 8: UI TESTING PLAYGROUND TRAPS (85..92) ====================
+  {
+    id: 85,
+    category: 'UITestingPlayground Traps',
+    name: 'Dynamic ID - Bấm nút có ID thay đổi ngẫu nhiên',
+    url: 'http://uitestingplayground.com/dynamicid',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Dynamic ID" -> (2) Bấm "Button with Dynamic ID"`,
+  },
+  {
+    id: 86,
+    category: 'UITestingPlayground Traps',
+    name: 'Class Attribute - Bấm nút chính dựa trên ngữ cảnh khi có 3 nút cùng chữ Button',
+    url: 'http://uitestingplayground.com/classattr',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Class Attribute" -> (2) Bấm "Button"`,
+  },
+  {
+    id: 87,
+    category: 'UITestingPlayground Traps',
+    name: 'Hidden Layers - Bấm nút Green Button lần 1 -> Bắt lỗi ELEMENT_OBSCURED khi nút Green bị Blue Button đè lên ở lần 2',
+    url: 'http://uitestingplayground.com/hiddenlayers',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Kiểm tra hiện chữ "Hidden Layers" -> (2) Bấm "greenButton" -> (3) Bấm "greenButton"`,
+  },
+  {
+    id: 88,
+    category: 'UITestingPlayground Traps',
+    name: 'Load Delay - Bấm Load Delay trên trang chủ -> Đợi chuyển trang trễ -> Bấm nút',
+    url: 'http://uitestingplayground.com',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm "Load Delay" -> (2) Kiểm tra hiện chữ "Load Delays" -> (3) Bấm "Button Appearing After Delay"`,
+  },
+  {
+    id: 89,
+    category: 'UITestingPlayground Traps',
+    name: 'AJAX Data - Bấm nút gọi AJAX siêu chậm 15 giây (vượt ngưỡng chờ 5s của Assert)',
+    url: 'http://uitestingplayground.com/ajax',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Bấm "Button Triggering AJAX Request" -> (2) Kiểm tra hiện chữ "Data loaded with AJAX get request."`,
+  },
+  {
+    id: 90,
+    category: 'UITestingPlayground Traps',
+    name: 'Text Input - Điền tên mới cho nút -> Bấm nút -> Kiểm tra tên nút đã đổi',
+    url: 'http://uitestingplayground.com/textinput',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền "Set New Button Name" \`NutMoiAutotest\` -> (2) Bấm "Button That Should Change it's Name Based on Input Value" -> (3) Kiểm tra hiện chữ "NutMoiAutotest"`,
+  },
+  {
+    id: 91,
+    category: 'UITestingPlayground Traps',
+    name: 'Scrollbars - Bấm nút nằm khuất trong khung scroll con (overflow)',
+    url: 'http://uitestingplayground.com/scrollbars',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Kiểm tra hiện chữ "Scrollbars" -> (2) Bấm "Hiding Button"`,
+  },
+  {
+    id: 92,
+    category: 'UITestingPlayground Traps',
+    name: 'Overlapped Element - Điền vào ô Name bị một thẻ div đè lên một nửa',
+    url: 'http://uitestingplayground.com/overlapped',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền "Id" \`id_01\` -> (2) Điền "Name" \`NguyenVanA\``,
+  },
+
+  // ==================== NHÓM 9: GEARVN VIETNAMESE E-COMMERCE (93..100) ====================
+  {
+    id: 93,
+    category: 'GearVN Store VI',
+    name: 'Luồng 12 bước mua Bàn phím cơ màu Đen thành công',
+    url: 'http://localhost:3456',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`khach01\` -> (2) Điền mật khẩu \`123456\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Xin chào, khach01" -> (5) Tìm kiếm "Bàn phím cơ" -> (6) Chọn sản phẩm đầu tiên -> (7) Chọn màu "Đen" -> (8) Bấm Thêm vào giỏ -> (9) Mở Giỏ hàng -> (10) Bấm Mua hàng -> (11) Điền SĐT \`0987654321\`, địa chỉ \`123 Cầu Giấy\` rồi bấm Đặt hàng -> (12) Kiểm tra hiện thông báo "Đặt hàng thành công"`,
+  },
+  {
+    id: 94,
+    category: 'GearVN Store VI',
+    name: 'Luồng 12 bước mua Bàn phím cơ màu Trắng thành công',
+    url: 'http://localhost:3456',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`khach01\` -> (2) Điền mật khẩu \`123456\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Xin chào, khach01" -> (5) Tìm kiếm "Bàn phím cơ" -> (6) Chọn sản phẩm đầu tiên -> (7) Chọn màu "Trắng" -> (8) Bấm Thêm vào giỏ -> (9) Mở Giỏ hàng -> (10) Bấm Mua hàng -> (11) Điền SĐT \`0911223344\`, địa chỉ \`456 Nguyễn Trãi\` rồi bấm Đặt hàng -> (12) Kiểm tra hiện thông báo "Đặt hàng thành công"`,
+  },
+  {
+    id: 95,
+    category: 'GearVN Store VI',
+    name: 'Luồng 12 bước mua sản phẩm thứ 2 (Akko 3098B) màu Đỏ thành công',
+    url: 'http://localhost:3456',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`khach01\` -> (2) Điền mật khẩu \`123456\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Xin chào, khach01" -> (5) Tìm kiếm "Bàn phím cơ" -> (6) Chọn sản phẩm thứ 2 -> (7) Chọn màu "Đỏ" -> (8) Bấm Thêm vào giỏ -> (9) Mở Giỏ hàng -> (10) Bấm Mua hàng -> (11) Điền SĐT \`0933445566\`, địa chỉ \`789 Lê Lợi\` rồi bấm Đặt hàng -> (12) Kiểm tra hiện thông báo "Đặt hàng thành công"`,
+  },
+  {
+    id: 96,
+    category: 'GearVN Store VI',
+    name: 'Bẫy hết hàng khi chọn màu Đen -> Bắt lỗi ELEMENT_DISABLED ở bước 8',
+    url: 'http://localhost:3456/?trap=disabled_cart',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Điền tài khoản \`khach01\` -> (2) Điền mật khẩu \`123456\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Xin chào, khach01" -> (5) Tìm kiếm "Bàn phím cơ" -> (6) Chọn sản phẩm đầu tiên -> (7) Chọn màu "Đen" -> (8) Bấm Thêm vào giỏ -> (9) Mở Giỏ hàng`,
+  },
+  {
+    id: 97,
+    category: 'GearVN Store VI',
+    name: 'Trang bật bẫy hết hàng màu Đen nhưng khách chọn màu Trắng -> Vẫn mua thành công 12 bước',
+    url: 'http://localhost:3456/?trap=disabled_cart',
+    expectedOutcome: 'PASSED',
+    scenario: `(1) Điền tài khoản \`khach01\` -> (2) Điền mật khẩu \`123456\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Xin chào, khach01" -> (5) Tìm kiếm "Bàn phím cơ" -> (6) Chọn sản phẩm đầu tiên -> (7) Chọn màu "Trắng" -> (8) Bấm Thêm vào giỏ -> (9) Mở Giỏ hàng -> (10) Bấm Mua hàng -> (11) Điền SĐT \`0987654321\`, địa chỉ \`123 Cầu Giấy\` rồi bấm Đặt hàng -> (12) Kiểm tra hiện thông báo "Đặt hàng thành công"`,
+  },
+  {
+    id: 98,
+    category: 'GearVN Store VI',
+    name: 'Điền sai mật khẩu -> Bắt lỗi ASSERTION_MISMATCH tại bước 4',
+    url: 'http://localhost:3456',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Điền tài khoản \`khach01\` -> (2) Điền mật khẩu \`mat_khau_sai\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Xin chào, khach01" -> (5) Tìm kiếm "Bàn phím cơ"`,
+  },
+  {
+    id: 99,
+    category: 'GearVN Store VI',
+    name: 'Điền sai tài khoản -> Bắt lỗi ASSERTION_MISMATCH tại bước 4',
+    url: 'http://localhost:3456',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Điền tài khoản \`tai_khoan_la\` -> (2) Điền mật khẩu \`123456\` -> (3) Bấm Đăng nhập -> (4) Kiểm tra hiện chữ "Xin chào, khach01"`,
+  },
+  {
+    id: 100,
+    category: 'GearVN Store VI',
+    name: 'Bấm nút không tồn tại Áp dụng mã giảm giá VIP -> Bắt lỗi ELEMENT_NOT_FOUND',
+    url: 'http://localhost:3456',
+    expectedOutcome: 'FAILED',
+    scenario: `(1) Điền tài khoản \`khach01\` -> (2) Điền mật khẩu \`123456\` -> (3) Bấm Đăng nhập -> (4) Tìm kiếm "Bàn phím cơ" -> (5) Chọn sản phẩm đầu tiên -> (6) Bấm "Áp dụng mã giảm giá VIP"`,
+  },
+];
+
+function classifyTechnicalIssue(
+  item: Scenario100Item,
+  res: TestRunResult
+): {
+  issueType: string;
+  rootCauseAnalysis: string;
+} {
+  if (item.expectedOutcome === 'FAILED' && res.status === 'FAILED') {
+    return {
+      issueType: 'INTENTIONAL_NEGATIVE_TEST_CAUGHT',
+      rootCauseAnalysis: `Hệ thống bắt đúng lỗi kỳ vọng tại Bước ${res.failedStep} (${res.reasonCode}): ${res.reasonDetail}`,
+    };
+  }
+
+  const detail = res.reasonDetail || '';
+  const code = res.reasonCode || 'UNKNOWN';
+
+  if (code === 'ELEMENT_OBSCURED') {
+    return {
+      issueType: 'DOM_LAYER_OVERLAP_OR_OBSCURED',
+      rootCauseAnalysis: `Phần tử mục tiêu tồn tại trong DOM nhưng tại tọa độ tâm (elementFromPoint) đang bị một phần tử/lớp phủ khác đè lên: ${detail}`,
+    };
+  }
+
+  if (code === 'ELEMENT_DISABLED') {
+    return {
+      issueType: 'DISABLED_ELEMENT_INTERACTION_BLOCKED',
+      rootCauseAnalysis: `Phần tử mục tiêu đang ở trạng thái khóa (disabled / aria-disabled), hệ thống từ chối thao tác: ${detail}`,
+    };
+  }
+
+  if (code === 'ELEMENT_NOT_FOUND') {
+    if (
+      item.scenario.includes('Price (low to high)') ||
+      item.scenario.includes('Option 1')
+    ) {
+      return {
+        issueType: 'NATIVE_SELECT_OPTION_NOT_IN_DOM_DISTILLER',
+        rootCauseAnalysis: `Lệnh dùng động từ "Chọn <Option>" (được parser hiểu là CLICK vào phần tử có chữ Option), nhưng thẻ <option> bên trong <select> native có kích thước BoundingClientRect = 0x0 khi chưa mở dropdown và chưa hỗ trợ lệnh selectOption() riêng biệt.`,
+      };
+    }
+    if (item.scenario.includes('checkbox 1')) {
+      return {
+        issueType: 'UNLABELED_RAW_TEXT_NODE_NEXT_TO_CHECKBOX',
+        rootCauseAnalysis: `Trên trang /checkboxes, chữ "checkbox 1" là một TextNode thô nằm sau thẻ <input type="checkbox"> mà không bọc trong thẻ <label> hay <span>, đồng thời parser dịch "Bấm checkbox 1" thành CLICK nhưng chưa lấy raw TextNode của parent làm nhãn cho input[type="checkbox"].`,
+      };
+    }
+    return {
+      issueType: 'SEMANTIC_MATCH_OR_VISIBILITY_GAP',
+      rootCauseAnalysis: `Không tìm thấy phần tử đạt ngưỡng >= 70 điểm trên màn hình hiện tại: ${detail}`,
+    };
+  }
+
+  if (code === 'ASSERTION_MISMATCH') {
+    if (item.url.includes('ajax') || item.url.includes('js-delayed')) {
+      return {
+        issueType: 'EXTREME_ASYNC_DELAY_EXCEEDS_ASSERT_TIMEOUT',
+        rootCauseAnalysis: `Trang web dùng setTimeout / AJAX trễ 10s-15s mới render nội dung, vượt quá thời gian chờ mặc định (5 giây) của bước kiểm tra ASSERT_TEXT.`,
+      };
+    }
+    if (item.name.includes('problem_user')) {
+      return {
+        issueType: 'BROKEN_WEB_APP_SYNTHETIC_STATE_BUG',
+        rootCauseAnalysis: `Tài khoản problem_user của SauceDemo có bug thực tế: khi điền ô Last Name, code React của web ghi đè ngược vào ô First Name và làm mất Last Name, dẫn đến bấm Continue bị báo lỗi "Error: Last Name is required".`,
+      };
+    }
+    return {
+      issueType: 'POST_ACTION_STATE_OR_ASSERTION_MISMATCH',
+      rootCauseAnalysis: `Sau khi thực hiện các bước trước, nội dung kỳ vọng không xuất hiện (hoặc bước click trước đó bấm vào phần tử trùng tên ở modal/navbar khác): ${detail}`,
+    };
+  }
+
+  return {
+    issueType: 'RUNTIME_EXECUTION_ERROR',
+    rootCauseAnalysis: detail,
+  };
+}
+
+async function main() {
+  // 1. Lưu 100 kịch bản đầu vào ra file scenarios_100.json
+  const scenariosFilePath = path.join(process.cwd(), 'scenarios_100.json');
+  fs.writeFileSync(
+    scenariosFilePath,
+    JSON.stringify(HUNDRED_SCENARIOS, null, 2),
+    'utf-8'
+  );
+  console.log(`Đã lưu 100 kịch bản đầu vào tại: ${scenariosFilePath}`);
+
+  const server = await startRealTrapEcommerceServer(3456);
+  const resultsMap = new Map<number, TestRunResult>();
+
+  try {
+    // Chạy song song theo Pool (Concurrency = 5) để hoàn thành 100 kịch bản nhanh và ổn định
+    const concurrency = 5;
+    let currentIndex = 0;
+
+    async function worker(workerId: number) {
+      while (currentIndex < HUNDRED_SCENARIOS.length) {
+        const idx = currentIndex++;
+        const item = HUNDRED_SCENARIOS[idx];
+        const res = await runStrictTestScenario({
+          url: item.url,
+          scenario: item.scenario,
+          casePrefix: `c${String(item.id).padStart(3, '0')}`,
+        });
+        resultsMap.set(item.id, res);
+        const matchStr =
+          res.status === item.expectedOutcome ? 'OK_EXPECTED' : 'UNEXPECTED_ISSUE';
+        console.log(
+          `[Worker ${workerId}] #${String(item.id).padStart(3, '0')} (${
+            item.category
+          }) -> ${res.status} (${res.completedSteps}/${res.totalSteps} bước, ${
+            res.totalDurationMs
+          }ms) [${matchStr}]`
+        );
+      }
+    }
+
+    const workers = Array.from({ length: concurrency }, (_, i) => worker(i + 1));
+    await Promise.all(workers);
+
+    // 2. Tổng hợp kết quả và trích xuất toàn bộ các vấn đề gặp phải vào issues_encountered.json
+    const unexpectedIssues: any[] = [];
+    const caughtNegativeTests: any[] = [];
+    const issueCategoryCounter: Record<string, number> = {};
+
+    for (const item of HUNDRED_SCENARIOS) {
+      const res = resultsMap.get(item.id)!;
+      const failedLog = res.logs.find((l) => l.status === 'FAILED');
+
+      if (res.status === 'FAILED' || res.status !== item.expectedOutcome) {
+        const diag = classifyTechnicalIssue(item, res);
+        issueCategoryCounter[diag.issueType] =
+          (issueCategoryCounter[diag.issueType] || 0) + 1;
+
+        const record = {
+          scenarioId: item.id,
+          category: item.category,
+          scenarioName: item.name,
+          url: item.url,
+          expectedOutcome: item.expectedOutcome,
+          actualOutcome: res.status,
+          progress: `${res.completedSteps}/${res.totalSteps}`,
+          failedAtStep: res.failedStep,
+          failedStepInstruction: failedLog?.instruction || null,
+          reasonCode: res.reasonCode,
+          reasonDetail: res.reasonDetail,
+          technicalIssueType: diag.issueType,
+          rootCauseAnalysis: diag.rootCauseAnalysis,
+          screenshotPath: res.screenshotPath,
+          durationMs: res.totalDurationMs,
+        };
+
+        if (res.status !== item.expectedOutcome) {
+          unexpectedIssues.push(record);
+        } else {
+          caughtNegativeTests.push(record);
+        }
+      }
+    }
+
+    const passedCount = Array.from(resultsMap.values()).filter(
+      (r) => r.status === 'PASSED'
+    ).length;
+    const failedCount = HUNDRED_SCENARIOS.length - passedCount;
+
+    const issuesReport = {
+      generatedAt: new Date().toISOString(),
+      summary: {
+        totalScenariosRun: HUNDRED_SCENARIOS.length,
+        totalPassed: passedCount,
+        totalFailed: failedCount,
+        unexpectedEngineOrWebIssuesCount: unexpectedIssues.length,
+        intentionalNegativeTestsCaughtCount: caughtNegativeTests.length,
+        issueCategoryBreakdown: issueCategoryCounter,
+      },
+      unexpectedEngineOrWebIssues: unexpectedIssues,
+      intentionalNegativeTestsCaught: caughtNegativeTests,
+    };
+
+    const issuesFilePath = path.join(process.cwd(), 'issues_encountered.json');
+    fs.writeFileSync(
+      issuesFilePath,
+      JSON.stringify(issuesReport, null, 2),
+      'utf-8'
+    );
+
+    console.log('\n================================================================================');
+    console.log('HOÀN TẤT CHẠY 100 KỊCH BẢN THỰC TẾ');
+    console.log(`- Tổng số PASSED : ${passedCount}/100`);
+    console.log(`- Tổng số FAILED : ${failedCount}/100`);
+    console.log(`  + Trong đó Bắt đúng kịch bản lỗi chủ đích (Negative Tests) : ${caughtNegativeTests.length}`);
+    console.log(`  + Trong đó Vấn đề kỹ thuật / Bẫy giao diện mới phát sinh   : ${unexpectedIssues.length}`);
+    console.log(`- File 100 kịch bản đầu vào : ${scenariosFilePath}`);
+    console.log(`- File tổng hợp vấn đề      : ${issuesFilePath}`);
+    console.log('================================================================================\n');
+  } finally {
+    server.close();
+  }
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

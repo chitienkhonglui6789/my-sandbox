@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Environment variables & Secrets (Chứa API Key)
+.env
+.env.*
+!.env.example
+
+# Test outputs & Screenshots
+output/
+*.log
+
+# Build & TS Cache
+dist/
+*.tsbuildinfo
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

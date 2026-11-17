@@ -1,0 +1,120 @@
+{
+  "name": "Kịch bản E-commerce Dạng Đối Tượng AST Chuẩn Hóa Theo QUY_CHUAN_KICH_BAN.md (18 Bước)",
+  "description": "Định dạng JSON có cấu trúc đối tượng từng bước (Canonical AST) độc lập với ngôn ngữ tự nhiên",
+  "url": "https://www.saucedemo.com",
+  "version": "1.0.0",
+  "steps": [
+    {
+      "step": 1,
+      "type": "FILL",
+      "target": "Username",
+      "value": "standard_user",
+      "instruction": "Điền \"standard_user\" vào ô \"Username\""
+    },
+    {
+      "step": 2,
+      "type": "FILL",
+      "target": "Password",
+      "value": "secret_sauce",
+      "instruction": "Điền \"secret_sauce\" vào ô \"Password\""
+    },
+    {
+      "step": 3,
+      "type": "CLICK",
+      "target": "Login",
+      "instruction": "Bấm \"Login\""
+    },
+    {
+      "step": 4,
+      "type": "ASSERT_TEXT",
+      "expected": "Products",
+      "instruction": "Kiểm tra hiện chữ \"Products\""
+    },
+    {
+      "step": 5,
+      "type": "SELECT_ITEM",
+      "index": 1,
+      "instruction": "Chọn sản phẩm thứ 1"
+    },
+    {
+      "step": 6,
+      "type": "CLICK",
+      "target": "Add to cart",
+      "instruction": "Bấm \"Add to cart\""
+    },
+    {
+      "step": 7,
+      "type": "NAVIGATE_BACK",
+      "instruction": "Quay lại trang trước"
+    },
+    {
+      "step": 8,
+      "type": "SELECT_ITEM",
+      "index": 2,
+      "instruction": "Chọn sản phẩm thứ 2"
+    },
+    {
+      "step": 9,
+      "type": "CLICK",
+      "target": "Add to cart",
+      "instruction": "Bấm \"Add to cart\""
+    },
+    {
+      "step": 10,
+      "type": "CLICK",
+      "target": "shopping_cart_link",
+      "instruction": "Bấm \"shopping_cart_link\""
+    },
+    {
+      "step": 11,
+      "type": "ASSERT_TEXT",
+      "expected": "Your Cart",
+      "instruction": "Kiểm tra hiện chữ \"Your Cart\""
+    },
+    {
+      "step": 12,
+      "type": "CLICK",
+      "target": "Checkout",
+      "instruction": "Bấm \"Checkout\""
+    },
+    {
+      "step": 13,
+      "type": "FILL",
+      "target": "First Name",
+      "value": "Nguyen",
+      "instruction": "Điền \"Nguyen\" vào ô \"First Name\""
+    },
+    {
+      "step": 14,
+      "type": "FILL",
+      "target": "Last Name",
+      "value": "Van A",
+      "instruction": "Điền \"Van A\" vào ô \"Last Name\""
+    },
+    {
+      "step": 15,
+      "type": "FILL",
+      "target": "Zip/Postal Code",
+      "value": "100000",
+      "instruction": "Điền \"100000\" vào ô \"Zip/Postal Code\""
+    },
+    {
+      "step": 16,
+      "type": "CLICK",
+      "target": "Continue",
+      "instruction": "Bấm \"Continue\""
+    },
+    {
+      "step": 17,
+      "type": "CLICK",
+      "target": "Finish",
+      "instruction": "Bấm \"Finish\""
+    },
+    {
+      "step": 18,
+      "type": "ASSERT_TEXT",
+      "expected": "Thank you for your order!",
+      "instruction": "Kiểm tra hiện chữ \"Thank you for your order!\""
+    }
+  ]
+}
