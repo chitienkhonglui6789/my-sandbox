@@ -1,15 +1,33 @@
 import { Page } from 'playwright';
 import { DOMCandidate } from './types';
+import {
+  detectSafeViewportBand,
+  isRectInSafeViewportBand,
+  SafeViewportBand,
+} from './occlusion-engine';
+import {
+  classifySvgSignature,
+  computeSvgTopologyScore,
+  evaluateAriaState,
+  evaluateSpatialBoundary,
+  extractNamelessSvgCandidates,
+  inferSvgTargetIntent,
+  SvgIconCandidateInput,
+} from './svg-icon-topology';
 
 /**
  * HYBRID DOM DISTILLER (ENTERPRISE EDITION)
  * Trích xuất toàn diện mọi phần tử tương tác trên trang web thực tế:
  * 1. Đâm xuyên qua toàn bộ Open Shadow DOM (Custom Web Components).
  * 2. Đâm xuyên qua toàn bộ iFrames (Cổng thanh toán VNPay/OnePay, Modal nhúng, Chatbot).
- * 3. Hit-testing 3 điểm mẫu (elementFromPoint) để loại trừ triệt để DOM ẩn/đè.
- * 4. Spatial Label Resolution: Tự động gom nhãn không gian theo khoảng cách tọa độ.
- * 5. Bắt các thẻ <div> / <span> giả nút bấm, ô swatch màu sắc, chip lọc.
- * 6. Card Indexing: Nhận diện danh sách thẻ lặp lại (Cards) để chọn "sản phẩm/video đầu tiên".
+ * 3. Prompt 10: Hit-testing đa điểm 5 điểm (Tâm + 4 góc an toàn cách mép 5px) & Safe Viewport Band
+ *    giúp không bỏ sót phần tử bị che 1 phần và giữ tọa độ click vật lý an toàn.
+ * 4. Prompt 12: Làm giàu phần tử Icon SVG không nhãn (0 text, 0 aria, 0 title) qua Structural Signature Bank,
+ *    Spatial Boundary Proximity & ARIA State Dynamic Mapping (chống trùng lặp <button><span><svg/></span></button>
+ *    và lọc bỏ spacer fill="none" stroke="none").
+ * 5. Spatial Label Resolution: Tự động gom nhãn không gian theo khoảng cách tọa độ.
+ * 6. Bắt các thẻ <div> / <span> giả nút bấm, ô swatch màu sắc, chip lọc.
+ * 7. Card Indexing: Nhận diện danh sách thẻ lặp lại (Cards) để chọn "sản phẩm/video đầu tiên".
  */
 export async function distillPageDOM(
   page: Page,
@@ -19,6 +37,9 @@ export async function distillPageDOM(
   const frames = page.frames();
   const allCandidates: DOMCandidate[] = [];
   let nextGlobalId = 1;
+
+  // Prompt 10: Quét dải Viewport an toàn [H_top + 20px, ViewportHeight - H_bottom - 20px]
+  const safeBand: SafeViewportBand | null = await detectSafeViewportBand(page).catch(() => null);
 
   for (let fIdx = 0; fIdx < frames.length; fIdx++) {
     const frame = frames[fIdx];
@@ -41,11 +62,117 @@ export async function distillPageDOM(
       for (const c of candidates) {
         c.frameIndex = fIdx;
         c.frameUrl = frame.url();
+        if (fIdx === 0 && safeBand) {
+          c.inSafeViewportBand = isRectInSafeViewportBand(c.rect, safeBand);
+        }
         allCandidates.push(c);
         nextGlobalId = Math.max(nextGlobalId, c.candidateId + 1);
       }
-    } catch (err: any) {
+    } catch {
       // Bỏ qua nếu frame đã bị hủy hoặc bảo mật cross-origin hạn chế
+    }
+  }
+
+  // Prompt 12: Làm giàu các ứng viên Icon SVG không nhãn (0 text, 0 ariaLabel, 0 title)
+  const namelessSvgCandidates = allCandidates.filter((c) => Boolean(c.svgMarkup));
+  if (namelessSvgCandidates.length > 0) {
+    const hasMainFrameNameless = namelessSvgCandidates.some((c) => c.frameIndex === 0);
+    const extractedMainSvgs: SvgIconCandidateInput[] = hasMainFrameNameless
+      ? await extractNamelessSvgCandidates(page).catch(() => [])
+      : [];
+    const usedExtractedIdx = new Set<number>();
+    const intent = queryHint ? inferSvgTargetIntent(queryHint).intent : 'unknown';
+
+    for (const cand of namelessSvgCandidates) {
+      let matchedSvgInput: SvgIconCandidateInput | null = null;
+
+      if (cand.frameIndex === 0 && extractedMainSvgs.length > 0) {
+        // Ưu tiên khớp theo elemId
+        if (cand.elemId) {
+          const idxById = extractedMainSvgs.findIndex(
+            (s, i) => !usedExtractedIdx.has(i) && s.elemId === cand.elemId
+          );
+          if (idxById >= 0) {
+            usedExtractedIdx.add(idxById);
+            matchedSvgInput = extractedMainSvgs[idxById];
+          }
+        }
+        // Khớp theo tọa độ hình học Bounding Box (sai số <= 6px)
+        if (!matchedSvgInput) {
+          let bestIdx = -1;
+          let bestDist = Infinity;
+          for (let i = 0; i < extractedMainSvgs.length; i++) {
+            if (usedExtractedIdx.has(i)) continue;
+            const s = extractedMainSvgs[i];
+            const dist =
+              Math.abs(s.rect.x - cand.rect.x) +
+              Math.abs(s.rect.y - cand.rect.y) +
+              Math.abs(s.rect.width - cand.rect.width) +
+              Math.abs(s.rect.height - cand.rect.height);
+            if (dist <= 24 && dist < bestDist) {
+              bestDist = dist;
+              bestIdx = i;
+            }
+          }
+          if (bestIdx >= 0) {
+            usedExtractedIdx.add(bestIdx);
+            matchedSvgInput = extractedMainSvgs[bestIdx];
+          }
+        }
+      }
+
+      const svgSource = matchedSvgInput ? matchedSvgInput.svg : cand.svgMarkup!;
+      const signature = classifySvgSignature(svgSource);
+      const spatial = evaluateSpatialBoundary(
+        matchedSvgInput ? matchedSvgInput.rect : cand.rect,
+        matchedSvgInput?.sidebars || [],
+        {
+          intent,
+          viewport: matchedSvgInput?.viewport,
+          nearSearchInput: matchedSvgInput?.nearSearchInput,
+          insideDialog: matchedSvgInput?.insideDialog,
+          insideHeader: matchedSvgInput?.insideHeader,
+        }
+      );
+      const ariaInfo = matchedSvgInput?.aria || {
+        ariaExpanded: cand.ariaExpanded ?? null,
+        ariaControls: cand.ariaControls ?? null,
+      };
+      const ariaEval = evaluateAriaState(ariaInfo, queryHint || '');
+      const breakdown = computeSvgTopologyScore({
+        signature,
+        spatial,
+        aria: ariaEval,
+        targetHint: queryHint || '',
+      });
+
+      const labelParts = [signature.virtualLabel, ...ariaEval.virtualLabelBoost].filter(
+        (s) => s && s.trim().length > 0
+      );
+      const virtualLabel = Array.from(new Set(labelParts.join(' ').split(/\s+/))).join(' ');
+
+      cand.svgIconFamily = signature.family;
+      cand.svgContext = spatial.contextTag;
+      cand.virtualLabel = virtualLabel || undefined;
+      cand.svgScore = queryHint ? breakdown.score : signature.confidence;
+      cand.ariaExpanded = (ariaInfo.ariaExpanded as string | undefined) || cand.ariaExpanded;
+      cand.ariaControls = (ariaInfo.ariaControls as string | undefined) || cand.ariaControls;
+      cand.svgTopologyData = matchedSvgInput
+        ? {
+            ...matchedSvgInput,
+            candidateId: cand.candidateId,
+            selector: cand.selectorPath,
+          }
+        : {
+            candidateId: cand.candidateId,
+            selector: cand.selectorPath,
+            tag: cand.tag,
+            elemId: cand.elemId,
+            rect: cand.rect,
+            svg: cand.svgMarkup!,
+            sidebars: [],
+            aria: ariaInfo,
+          };
     }
   }
 
@@ -121,12 +248,27 @@ function distillFrameEvaluator({
     }
   }
 
-  // Hàm kiểm tra phần tử có thực sự hiển thị về mặt vật lý không
+  // Hàm hit-test đâm xuyên Open Shadow DOM tại tọa độ (px, py)
+  function deepElementFromPoint(px: number, py: number): Element | null {
+    let topEl = document.elementFromPoint(px, py);
+    let guard = 0;
+    while (topEl && (topEl as HTMLElement).shadowRoot && guard < 10) {
+      const inner = (topEl as HTMLElement).shadowRoot!.elementFromPoint(px, py);
+      if (!inner || inner === topEl) break;
+      topEl = inner;
+      guard++;
+    }
+    return topEl;
+  }
+
+  // Hàm kiểm tra phần tử có thực sự hiển thị về mặt vật lý không (Prompt 10: 5-Point Multi-Sampling Hit-Test)
   function isPhysicallyVisible(el: Element): {
     visible: boolean;
     rect: DOMRect;
     obscured: boolean;
     obscuredBy?: string;
+    occlusionStatus?: 'EXPOSED' | 'PARTIALLY_OCCLUDED' | 'FULLY_OCCLUDED';
+    safeClickPoint?: { x: number; y: number };
   } {
     const rect = el.getBoundingClientRect();
     if (rect.width <= 2 || rect.height <= 2) {
@@ -155,31 +297,47 @@ function distillFrameEvaluator({
       parent = parent.parentElement;
     }
 
-    // Hit-test tại tâm phần tử nếu phần tử đang nằm trong vùng nhìn thấy (Viewport)
-    const inViewport =
-      rect.top >= 0 &&
-      rect.left >= 0 &&
-      rect.bottom <= window.innerHeight &&
-      rect.right <= window.innerWidth;
+    // Prompt 10: 5-Point Multi-Sampling Hit-Test (Tâm + 4 góc an toàn cách mép 5px, clamp cho phần tử nhỏ)
+    const overlapsViewport =
+      rect.bottom > 0 &&
+      rect.top < window.innerHeight &&
+      rect.right > 0 &&
+      rect.left < window.innerWidth;
 
-    if (inViewport) {
+    if (overlapsViewport) {
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
+      const insetX = Math.min(5, Math.max(1, rect.width * 0.25));
+      const insetY = Math.min(5, Math.max(1, rect.height * 0.25));
+
       const samplePoints: [number, number][] = [
         [cx, cy],
-        [cx, Math.min(rect.bottom - 2, rect.top + 5)],
-        [cx, Math.max(rect.top + 2, rect.bottom - 5)],
+        [rect.left + insetX, rect.top + insetY],
+        [rect.right - insetX, rect.top + insetY],
+        [rect.left + insetX, rect.bottom - insetY],
+        [rect.right - insetX, rect.bottom - insetY],
       ];
 
-      let anyPointAccessible = false;
+      let testedCount = 0;
+      let exposedCount = 0;
+      let centerExposed = false;
+      let firstExposedCorner: { x: number; y: number } | null = null;
       let firstObscuringDesc = '';
 
-      for (const [px, py] of samplePoints) {
-        const topEl = document.elementFromPoint(px, py);
-        if (!topEl) {
-          anyPointAccessible = true;
-          break;
+      for (let i = 0; i < samplePoints.length; i++) {
+        const [px, py] = samplePoints[i];
+        if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) {
+          continue;
         }
+        testedCount++;
+        const topEl = deepElementFromPoint(px, py);
+        if (!topEl) {
+          exposedCount++;
+          if (i === 0) centerExposed = true;
+          else if (!firstExposedCorner) firstExposedCorner = { x: px, y: py };
+          continue;
+        }
+
         const isRelated =
           el === topEl ||
           el.contains(topEl) ||
@@ -187,8 +345,9 @@ function distillFrameEvaluator({
           (el.tagName === 'INPUT' && topEl.tagName === 'LABEL');
 
         if (isRelated) {
-          anyPointAccessible = true;
-          break;
+          exposedCount++;
+          if (i === 0) centerExposed = true;
+          else if (!firstExposedCorner) firstExposedCorner = { x: px, y: py };
         } else if (!firstObscuringDesc) {
           const topClass = norm(topEl.className?.toString());
           const topTag = topEl.tagName.toLowerCase();
@@ -196,12 +355,36 @@ function distillFrameEvaluator({
         }
       }
 
-      if (!anyPointAccessible) {
+      if (testedCount > 0) {
+        if (exposedCount === 0) {
+          return {
+            visible: true,
+            rect,
+            obscured: true,
+            obscuredBy: firstObscuringDesc,
+            occlusionStatus: 'FULLY_OCCLUDED',
+          };
+        }
+        if (centerExposed && exposedCount === testedCount) {
+          return {
+            visible: true,
+            rect,
+            obscured: false,
+            occlusionStatus: 'EXPOSED',
+            safeClickPoint: { x: Math.round(cx), y: Math.round(cy) },
+          };
+        }
+        // Bị che 1 phần nhưng tâm hoặc >= 1 góc lộ diện -> KHÔNG bỏ sót, dịch chuyển tọa độ click an toàn!
+        const safePt = centerExposed
+          ? { x: Math.round(cx), y: Math.round(cy) }
+          : { x: Math.round(firstExposedCorner!.x), y: Math.round(firstExposedCorner!.y) };
         return {
           visible: true,
           rect,
-          obscured: true,
-          obscuredBy: firstObscuringDesc,
+          obscured: false,
+          obscuredBy: firstObscuringDesc || undefined,
+          occlusionStatus: 'PARTIALLY_OCCLUDED',
+          safeClickPoint: safePt,
         };
       }
     }
@@ -337,6 +520,7 @@ function distillFrameEvaluator({
 
   const hintLower = (hint || '').toLowerCase();
   const allElements = getAllElementsIncludingShadow(document);
+  const seenSvgs = new Set<Element>();
 
   for (const rawEl of allElements) {
     if (!(rawEl instanceof HTMLElement)) continue;
@@ -352,6 +536,9 @@ function distillFrameEvaluator({
     const elemId = rawEl.id || undefined;
     const href = rawEl.getAttribute('href') || undefined;
     const ariaLabel = rawEl.getAttribute('aria-label') || undefined;
+    const ariaExpanded = rawEl.getAttribute('aria-expanded') || undefined;
+    const ariaControls = rawEl.getAttribute('aria-controls') || undefined;
+    const titleAttr = rawEl.getAttribute('title') || undefined;
     const style = window.getComputedStyle(rawEl);
 
     const isStandardInteractive =
@@ -371,10 +558,26 @@ function distillFrameEvaluator({
     const fullText = norm(rawEl.innerText || rawEl.textContent);
 
     const hasPointerCursor = style.cursor === 'pointer';
+    const svgChild = rawEl.querySelector('svg');
+    const isNestedInsideInteractive =
+      !isStandardInteractive &&
+      Boolean(rawEl.parentElement?.closest('button, a, [role="button"], [role="menuitem"], [onclick], [tabindex="0"]'));
+
+    // Chống nhân bản ứng viên cho <button style="cursor:pointer"><span><svg/></span></button>
+    if (isNestedInsideInteractive && svgChild && !fullText) {
+      continue;
+    }
+
     const isSmallLeafWithText =
       fullText.length > 0 &&
       fullText.length <= 60 &&
       rawEl.children.length <= 2;
+
+    const isCustomPointerSvgTrigger =
+      !isNestedInsideInteractive &&
+      hasPointerCursor &&
+      rawEl.children.length <= 2 &&
+      Boolean(svgChild);
 
     const matchesHintKeyword =
       hintLower.length > 0 &&
@@ -385,6 +588,7 @@ function distillFrameEvaluator({
 
     const isCustomInteractive =
       (hasPointerCursor && isSmallLeafWithText) ||
+      isCustomPointerSvgTrigger ||
       matchesHintKeyword ||
       /\b(btn|button|swatch|color-option|variant|cart|checkout|search-btn|card-title|option|dropdown-item|ant-select|select-option|menu-item|item-option|combobox|select2)\b/i.test(
         rawEl.className?.toString() || ''
@@ -397,13 +601,27 @@ function distillFrameEvaluator({
     // Bỏ qua thẻ bao ngoài nếu bên trong đã có button/a/input con cụ thể hơn
     if (
       !['input', 'textarea', 'select', 'button', 'a'].includes(tag) &&
-      rawEl.querySelectorAll('button, a, input, select, textarea').length >= 1
+      rawEl.querySelectorAll('button, a, input, select, textarea, [role="button"], [role="menuitem"], [onclick], [tabindex="0"]').length >= 1
     ) {
       continue;
     }
 
     const vis = isPhysicallyVisible(rawEl);
     if (!vis.visible) continue;
+
+    // Prompt 12: Nhận diện ứng viên Icon SVG không nhãn (0 visible text, 0 aria-label, 0 title)
+    let svgMarkup: string | undefined;
+    if (svgChild && !seenSvgs.has(svgChild)) {
+      const cloneForText = rawEl.cloneNode(true) as HTMLElement;
+      cloneForText
+        .querySelectorAll('svg, .sr-only, .visually-hidden, .screen-reader-text')
+        .forEach((n) => n.remove());
+      const nonSvgText = norm(cloneForText.textContent);
+      if (!nonSvgText && !ariaLabel && !titleAttr) {
+        seenSvgs.add(svgChild);
+        svgMarkup = svgChild.outerHTML;
+      }
+    }
 
     const candidateId = nextId++;
     rawEl.setAttribute('data-autotest-id', String(candidateId));
@@ -476,6 +694,11 @@ function distillFrameEvaluator({
       disabledReason: dis.reason,
       obscured: vis.obscured,
       obscuredBy: vis.obscuredBy,
+      occlusionStatus: vis.occlusionStatus,
+      safeClickPoint: vis.safeClickPoint,
+      svgMarkup,
+      ariaExpanded,
+      ariaControls,
       rect: {
         x: Math.round(vis.rect.left),
         y: Math.round(vis.rect.top),

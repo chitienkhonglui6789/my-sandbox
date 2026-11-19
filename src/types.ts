@@ -107,6 +107,28 @@ export interface DOMCandidate {
   rect: { x: number; y: number; width: number; height: number };
   selectorPath: string;
   fingerprint: ElementFingerprint;
+  /** Prompt 12: Nhãn ngữ nghĩa ảo sinh từ Vector Path Structural Signature Bank */
+  virtualLabel?: string;
+  /** Prompt 12: Họ chữ ký hình học vector SVG (hamburger, chevron_left, chevron_right, sidebar_layout, close, search, settings) */
+  svgIconFamily?: string;
+  /** Prompt 12: Ngữ cảnh vị trí không gian của nút icon SVG (VD: "Sidebar Boundary Control") */
+  svgContext?: string;
+  /** Prompt 12: Điểm tổng hợp 4 trọng số SVG Topology (0..1) */
+  svgScore?: number;
+  /** Prompt 12: Chuỗi outerHTML của thẻ <svg> bên trong ứng viên không nhãn */
+  svgMarkup?: string;
+  /** Prompt 12: Thuộc tính aria-expanded ("true" | "false") */
+  ariaExpanded?: string;
+  /** Prompt 12: Thuộc tính aria-controls liên kết tới sidebar/menu/drawer */
+  ariaControls?: string;
+  /** Prompt 12: Dữ liệu topology SVG đã trích xuất để resolver tái sử dụng trực tiếp */
+  svgTopologyData?: any;
+  /** Prompt 10: Phần tử có nằm trong Safe Viewport Band [H_top + 20px, VH - H_bottom - 20px] không */
+  inSafeViewportBand?: boolean;
+  /** Prompt 10: Trạng thái che khuất từ bộ Hit-Test đa điểm 5 điểm */
+  occlusionStatus?: 'EXPOSED' | 'PARTIALLY_OCCLUDED' | 'FULLY_OCCLUDED';
+  /** Prompt 10: Tọa độ click vật lý an toàn đã dịch chuyển sang vùng hở (isTrusted: true) */
+  safeClickPoint?: { x: number; y: number };
 }
 
 export type FailureReasonCode =
@@ -116,7 +138,9 @@ export type FailureReasonCode =
   | 'ASSERTION_MISMATCH'
   | 'EXECUTION_ERROR'
   | 'AMBIGUOUS_TARGET'
-  | 'ANTYNOM_VIOLATION';
+  | 'ANTYNOM_VIOLATION'
+  | 'CIRCUIT_BREAKER_TRIGGERED'
+  | 'DEADLOCK_LOOP_DETECTED';
 
 export interface CapturedDialog {
   type: 'alert' | 'beforeunload' | 'confirm' | 'prompt';
@@ -129,6 +153,57 @@ export interface CapturedDialog {
   stepNumber?: number;
 }
 
+export interface XAIDecision {
+  chosenElement?: string;
+  healedIntent?: string;
+  damerauDistance?: number;
+  confidence?: number;
+  deltaMargin?: number;
+  criticVerdict?: 'APPROVED' | 'REJECTED' | string;
+  reasoning?: string;
+  matchSource?: string;
+  flag?: string;
+  /** Prompt 14: Tầng định tuyến AI đã giải quyết (L1 Fast-Path / L2 Typo & Antonym / L3 Vision SoM) */
+  routingTier?: 'L1' | 'L2' | 'L3';
+  /** Prompt 14: Mã số Mark ID Set-of-Marks [1], [2]... khi dùng Vision SoM */
+  somMarkId?: number;
+  /** Prompt 14: Chi phí ước tính USD của bước định tuyến */
+  estimatedCostUsd?: number;
+  /** Prompt 14: Độ trễ định tuyến (ms) */
+  routingLatencyMs?: number;
+  /** Prompt 10: Chiến lược xử lý che khuất vật lý (CENTER / SAFE_CORNER / POLYGON_CENTROID / SAFE_BAND_SCROLL) */
+  occlusionStrategy?: string;
+  /** Prompt 11: Danh sách lớp phủ treo đã được tự động giải phóng ngầm định */
+  dismissedOverlays?: string[];
+  /** Prompt 13: Phán quyết của Notification Oracle (SUCCESS_EVIDENCE / IGNORED / WARNING_LOGGED / EXPECTED_PASS / PRODUCT_DEFECT) */
+  notificationVerdict?: string;
+  /** Prompt 13: Các cảnh báo WARNING ghi nhận được (không đánh trượt kịch bản) */
+  notificationWarnings?: string[];
+}
+
+export type XAIAuditDecision = XAIDecision;
+
+export interface AIForensicAutopsy {
+  verdictCategory: string;
+  rootCause: string;
+  recommendation: string;
+  failureCode?: string;
+  suggestedRemediation?: string;
+  confidence?: number;
+}
+
+export interface StepAuditTrail {
+  stepNumber: number;
+  action: string;
+  targetHint?: string;
+  decision?: XAIDecision;
+  quiescenceWaitMs?: number;
+  screenshotPath?: string;
+  domHash?: string;
+  autopsy?: AIForensicAutopsy;
+  boundingBox?: { x: number; y: number; width: number; height: number };
+}
+
 export interface StepLog {
   step: number;
   instruction: string;
@@ -136,6 +211,21 @@ export interface StepLog {
   detail: string;
   durationMs: number;
   dialogs?: CapturedDialog[];
+  domHash?: string;
+  aiAuditTrail?: StepAuditTrail;
+  screenshotPath?: string;
+  /** Prompt 14: Tầng định tuyến L1 / L2 / L3 */
+  routingTier?: 'L1' | 'L2' | 'L3';
+  /** Prompt 14: Mã số Mark ID Set-of-Marks nếu dùng Vision SoM */
+  somMarkId?: number;
+  /** Prompt 10: Chiến lược xử lý che khuất vật lý */
+  occlusionStrategy?: string;
+  /** Prompt 11: Các lớp phủ treo đã tự động dọn dẹp */
+  dismissedOverlays?: string[];
+  /** Prompt 13: Phán quyết thông báo IEEE 29119 */
+  notificationVerdict?: string;
+  /** Prompt 13: Nhật ký cảnh báo màu vàng (WARNING) */
+  notificationWarnings?: string[];
 }
 
 export interface TestRunResult {
@@ -151,4 +241,8 @@ export interface TestRunResult {
   totalDurationMs: number;
   logs: StepLog[];
   dialogs?: CapturedDialog[];
+  circuitBreakerTripped?: boolean;
+  reportPath?: string;
+  steps?: any[];
+  aiAuditTrail?: StepAuditTrail[];
 }

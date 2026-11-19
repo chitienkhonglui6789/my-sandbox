@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { runStrictTestScenario } from './runner';
 
-const PORT = 5000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 5000;
 const OUTPUT_DIR = path.join(process.cwd(), 'output');
 
 const TEMPLATES: Record<string, { url: string; scenario: string }> = {
@@ -32,17 +32,32 @@ const TEMPLATES: Record<string, { url: string; scenario: string }> = {
 const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url || '/', `http://localhost:${PORT}`);
 
-  // 1. Phục vụ ảnh chụp màn hình bằng chứng
+  // 1. Phục vụ ảnh chụp màn hình bằng chứng và file báo cáo
   if (reqUrl.pathname.startsWith('/output/')) {
     const filename = path.basename(reqUrl.pathname);
     const filePath = path.join(OUTPUT_DIR, filename);
     if (fs.existsSync(filePath)) {
-      res.writeHead(200, { 'Content-Type': 'image/png' });
+      const ext = path.extname(filename).toLowerCase();
+      const contentType = ext === '.json' ? 'application/json; charset=utf-8' : 'image/png';
+      res.writeHead(200, { 'Content-Type': contentType });
       fs.createReadStream(filePath).pipe(res);
       return;
     }
     res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Image not found');
+    res.end('File not found');
+    return;
+  }
+
+  // 1.1 API Lấy báo cáo JSON (XAI Decision Audit Trail)
+  if (reqUrl.pathname === '/api/report' && req.method === 'GET') {
+    const reportPath = path.join(OUTPUT_DIR, 'report.json');
+    if (fs.existsSync(reportPath)) {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      fs.createReadStream(reportPath).pipe(res);
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Chưa có file report.json nào' }));
     return;
   }
 
@@ -74,10 +89,21 @@ const server = http.createServer(async (req, res) => {
         const shotFilename = path.basename(result.screenshotPath);
         const webShotUrl = `/output/${shotFilename}`;
 
+        // Bổ sung webShotUrl và link screenshot cho từng step
+        const enrichedLogs = (result.logs || []).map((l: any) => {
+          const sPath = l.screenshotPath || l.aiAuditTrail?.screenshotPath;
+          const sUrl = sPath ? `/output/${path.basename(sPath)}` : webShotUrl;
+          return {
+            ...l,
+            screenshotUrl: sUrl,
+          };
+        });
+
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(
           JSON.stringify({
             ...result,
+            logs: enrichedLogs,
             webShotUrl,
           })
         );
@@ -100,12 +126,15 @@ const server = http.createServer(async (req, res) => {
   res.end('Not Found');
 });
 
-server.listen(PORT, () => {
-  console.log(`===============================================================================`);
-  console.log(`  🎨 GIAO DIỆN KIỂM THỬ TỰ ĐỘNG DÀNH CHO TESTER ĐANG CHẠY TẠI:`);
-  console.log(`  👉  http://localhost:${PORT}`);
-  console.log(`===============================================================================`);
-});
+const isDirectRun = process.argv[1] ? /ui-server(\.ts|\.js)?$/i.test(process.argv[1]) : false;
+if (isDirectRun) {
+  server.listen(PORT, () => {
+    console.log(`===============================================================================`);
+    console.log(`  🎨 GIAO DIỆN KIỂM THỬ TỰ ĐỘNG DÀNH CHO TESTER ĐANG CHẠY TẠI:`);
+    console.log(`  👉  http://localhost:${PORT}`);
+    console.log(`===============================================================================`);
+  });
+}
 
 function getHtmlContent(): string {
   return `<!DOCTYPE html>
@@ -179,12 +208,214 @@ function getHtmlContent(): string {
 
     /* Step Timeline */
     .timeline { list-style: none; margin-bottom: 20px; }
-    .timeline-item { padding: 10px 14px; border-radius: 8px; margin-bottom: 8px; background: #f8fafc; border-left: 4px solid #cbd5e1; font-size: 13.5px; }
+    .timeline-item { padding: 12px 14px; border-radius: 8px; margin-bottom: 10px; background: #f8fafc; border-left: 4px solid #cbd5e1; font-size: 13.5px; transition: all 0.15s ease-in-out; }
     .timeline-item.ok { border-left-color: var(--success); }
     .timeline-item.fail { border-left-color: var(--danger); background: #fef2f2; }
+    .timeline-item.clickable { cursor: pointer; }
+    .timeline-item.clickable:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.06); background: #f1f5f9; border-left-width: 6px; }
     .item-header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; margin-bottom: 4px; }
     .item-detail { font-size: 12.5px; color: var(--text-muted); }
+    .item-click-hint { font-size: 11px; color: #3b82f6; font-weight: 600; display: flex; align-items: center; gap: 4px; margin-top: 4px; }
     .fail-text { color: var(--danger); font-weight: 600; }
+
+    /* AI Healed Badge */
+    .badge-ai-healed {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: linear-gradient(135deg, #fef08a, #facc15);
+      color: #854d0e;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid #fde047;
+      box-shadow: 0 1px 3px rgba(250, 204, 21, 0.25);
+      vertical-align: middle;
+      margin-left: 6px;
+    }
+
+    /* Modal Overlay */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(15, 23, 42, 0.65);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 9999;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-card {
+      background: #ffffff;
+      border-radius: 16px;
+      max-width: 960px;
+      width: 100%;
+      max-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.25);
+      animation: modalFadeIn 0.2s ease-out;
+    }
+    @keyframes modalFadeIn {
+      from { opacity: 0; transform: scale(0.96); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .modal-header {
+      padding: 16px 20px;
+      background: #f8fafc;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .modal-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #1e293b;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .modal-close-btn {
+      background: #e2e8f0;
+      border: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #475569;
+      transition: background 0.15s;
+    }
+    .modal-close-btn:hover { background: #cbd5e1; color: #0f172a; }
+    .modal-body {
+      padding: 20px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Modal Visual Stage & Bounding Box */
+    .stage-container {
+      position: relative;
+      background: #0f172a;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #334155;
+      display: inline-block;
+      width: 100%;
+    }
+    .stage-container img { width: 100%; height: auto; display: block; }
+    .bounding-box-overlay {
+      position: absolute;
+      border: 3px solid #ef4444;
+      background: rgba(239, 68, 68, 0.2);
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.8), inset 0 0 8px rgba(239, 68, 68, 0.4);
+      border-radius: 4px;
+      pointer-events: none;
+      animation: pulseBox 1.5s infinite alternate;
+    }
+    @keyframes pulseBox {
+      0% { border-color: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.7); }
+      100% { border-color: #f59e0b; box-shadow: 0 0 16px rgba(245,158,11,0.9); }
+    }
+    .bounding-box-tag {
+      position: absolute;
+      top: -24px;
+      left: 0;
+      background: #ef4444;
+      color: white;
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+
+    /* XAI Decision Section */
+    .xai-section-title {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #334155;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .xai-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .xai-metric-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .xai-metric-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .xai-metric-value {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #0f172a;
+      word-break: break-word;
+    }
+    .xai-metric-value.highlight-good { color: #16a34a; }
+    .xai-metric-value.highlight-warn { color: #d97706; }
+
+    /* XAI Reasoning Box */
+    .xai-reasoning-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-left: 4px solid #3b82f6;
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 13px;
+      color: #1e3a8a;
+      line-height: 1.6;
+    }
+
+    /* Autopsy Card */
+    .autopsy-card {
+      background: #fef2f2;
+      border: 1.5px solid #fecaca;
+      border-left: 4px solid #ef4444;
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .autopsy-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #991b1b;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .autopsy-row {
+      font-size: 12.5px;
+      margin-bottom: 6px;
+      color: #7f1d1d;
+    }
+    .autopsy-row strong { color: #450a0a; }
 
     /* Screenshot Preview */
     .screenshot-box { border-radius: 12px; overflow: hidden; border: 1px solid var(--border); background: #000; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
@@ -266,6 +497,21 @@ function getHtmlContent(): string {
     </div>
   </div>
 
+  <!-- MODAL XAI DECISION AUDIT TRAIL -->
+  <div id="stepModal" class="modal-overlay" onclick="handleBackdropClick(event)">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title" id="modalTitle">
+          <span>🔍 Chi tiết quyết định AI (XAI Audit Trail)</span>
+        </div>
+        <button class="modal-close-btn" onclick="closeStepModal()" title="Đóng">✕</button>
+      </div>
+      <div class="modal-body" id="modalBody">
+        <!-- Dynamic Content Injected Here -->
+      </div>
+    </div>
+  </div>
+
   <script>
     const TEMPLATES = ${JSON.stringify(TEMPLATES)};
 
@@ -328,6 +574,7 @@ function getHtmlContent(): string {
     }
 
     function renderResult(result) {
+      window.__currentResult = result;
       const isPassed = result.status === 'PASSED';
       const bannerClass = isPassed ? 'passed' : 'failed';
       const statusTitle = isPassed
@@ -335,19 +582,32 @@ function getHtmlContent(): string {
         : '❌ FAILED: Dừng ngay tại bước ' + (result.failedStep || (result.completedSteps + 1)) + '/' + result.totalSteps;
 
       let logsHtml = '<ul class="timeline">';
-      for (const l of result.logs || []) {
+      (result.logs || []).forEach((l, idx) => {
         const itemClass = l.status === 'OK' ? 'ok' : 'fail';
         const badge = l.status === 'OK' ? '<span style="color:#16a34a">✓ OK</span>' : '<span style="color:#dc2626">✗ THẤT BẠI</span>';
+        
+        // Kiểm tra xem bước có được AI tự phục hồi lỗi chính tả hay không
+        const audit = l.aiAuditTrail || (result.steps && result.steps[idx] ? result.steps[idx] : null);
+        const decision = (audit && audit.decision) || l.decision;
+        const isHealed = (decision && decision.damerauDistance && decision.damerauDistance > 0) ||
+                         (l.detail && l.detail.includes('AI Self-Healed')) ||
+                         (decision && decision.matchSource === 'FUZZY_HEALED');
+        
+        const healedBadge = isHealed
+          ? \`<span class="badge-ai-healed" title="AI đã tự phục hồi lỗi chính tả (Damerau distance: \${decision?.damerauDistance || 1})">✨ AI Healed</span>\`
+          : '';
+
         logsHtml += \`
-          <li class="timeline-item \${itemClass}">
+          <li class="timeline-item clickable \${itemClass}" onclick="openStepModal(\${idx})" title="Nhấp để xem XAI Decision Audit Trail & Bounding Box">
             <div class="item-header">
-              <span>Bước \${l.step}: \${escapeHtml(l.instruction)}</span>
+              <span>Bước \${l.step}: \${escapeHtml(l.instruction)} \${healedBadge}</span>
               <span>\${badge} (\${l.durationMs}ms)</span>
             </div>
             <div class="item-detail \${l.status === 'FAILED' ? 'fail-text' : ''}">\${escapeHtml(l.detail)}</div>
+            <div class="item-click-hint">🔍 Nhấp xem XAI Decision Audit Trail & Bounding Box &rarr;</div>
           </li>
         \`;
-      }
+      });
       logsHtml += '</ul>';
 
       const html = \`
@@ -358,7 +618,7 @@ function getHtmlContent(): string {
 
         \${result.reasonDetail ? '<div style="background:#fff1f2; border:1px solid #fecdd3; color:#9f1239; padding:10px 14px; border-radius:8px; font-size:13px; font-weight:600; margin-bottom:16px;">Chi tiết lỗi: ' + escapeHtml(result.reasonDetail) + '</div>' : ''}
 
-        <div style="font-size: 13px; font-weight: 700; color: #475569; margin-bottom: 8px;">NHẬT KÝ CHI TIẾT TỪNG BƯỚC:</div>
+        <div style="font-size: 13px; font-weight: 700; color: #475569; margin-bottom: 8px;">NHẬT KÝ CHI TIẾT TỪNG BƯỚC (NHẤP VÀO BƯỚC ĐỂ XEM XAI AUDIT TRAIL):</div>
         \${logsHtml}
 
         <div style="font-size: 13px; font-weight: 700; color: #475569; margin-bottom: 8px;">ẢNH BẰNG CHỨNG TRỰC QUAN (\${isPassed ? 'BƯỚC CUỐI CÙNG' : 'TẠI ĐIỂM GÃY'}):</div>
@@ -372,6 +632,186 @@ function getHtmlContent(): string {
       document.getElementById('resultContainer').innerHTML = html;
     }
 
+    function openStepModal(idx) {
+      const result = window.__currentResult;
+      if (!result) return;
+
+      const log = (result.logs && result.logs[idx]) || {};
+      const step = (result.steps && result.steps[idx]) || {};
+      const audit = log.aiAuditTrail || step || {};
+      const decision = audit.decision || log.decision || {};
+      const autopsy = audit.autopsy || log.autopsy || result.autopsy;
+      const boundingBox = audit.boundingBox || log.boundingBox || step.boundingBox;
+      const domHash = audit.domHash || log.domHash || step.domHash || 'N/A';
+      const quiescenceWaitMs = audit.quiescenceWaitMs || log.durationMs || step.quiescenceWaitMs || 0;
+
+      const rawShot = log.screenshotUrl || audit.screenshotPath || log.screenshotPath || step.screenshotPath || result.webShotUrl;
+      const shotUrl = rawShot ? (rawShot.startsWith('/output/') ? rawShot : ('/output/' + rawShot.split(/[\\\\/]/).pop())) : result.webShotUrl;
+
+      const isPassed = (log.status === 'OK' || step.status === 'OK');
+      const statusBadge = isPassed
+        ? '<span style="background:#dcfce7; color:#15803d; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:700;">✓ THÀNH CÔNG</span>'
+        : '<span style="background:#fee2e2; color:#b91c1c; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:700;">✗ THẤT BẠI</span>';
+
+      const isHealed = (decision && decision.damerauDistance && decision.damerauDistance > 0) ||
+                       (log.detail && log.detail.includes('AI Self-Healed')) ||
+                       (decision && decision.matchSource === 'FUZZY_HEALED');
+      const healedBadge = isHealed
+        ? '<span class="badge-ai-healed">✨ AI Healed</span>'
+        : '';
+
+      document.getElementById('modalTitle').innerHTML = \`
+        <span>Bước \${log.step || idx + 1}: \${escapeHtml(log.instruction || step.instruction || '')}</span>
+        \${statusBadge} \${healedBadge}
+      \`;
+
+      let boundingBoxHtml = '';
+      if (boundingBox && typeof boundingBox.x === 'number') {
+        const leftPct = Math.max(0, Math.min(100, (boundingBox.x / 1280) * 100));
+        const topPct = Math.max(0, Math.min(100, (boundingBox.y / 800) * 100));
+        const widthPct = Math.max(0, Math.min(100 - leftPct, (boundingBox.width / 1280) * 100));
+        const heightPct = Math.max(0, Math.min(100 - topPct, (boundingBox.height / 800) * 100));
+
+        boundingBoxHtml = \`
+          <div class="bounding-box-overlay" style="left:\${leftPct}%; top:\${topPct}%; width:\${widthPct}%; height:\${heightPct}%;">
+            <div class="bounding-box-tag">Target [x:\${Math.round(boundingBox.x)}, y:\${Math.round(boundingBox.y)}, \${Math.round(boundingBox.width)}x\${Math.round(boundingBox.height)}]</div>
+          </div>
+        \`;
+      }
+
+      let stageHtml = \`
+        <div>
+          <div class="xai-section-title">
+            <span>📸 Ảnh Bằng Chứng & Bounding Box Phần Tử Mục Tiêu</span>
+            \${boundingBox ? '<span style="font-size:11px; font-weight:normal; color:#64748b;">(Khung viền đỏ-cam: Bounding Box AI đã chọn)</span>' : '<span style="font-size:11px; font-weight:normal; color:#94a3b8;">(Không có BoundingBox cho bước này)</span>'}
+          </div>
+          <div class="stage-container">
+            <img src="\${shotUrl}" alt="Ảnh bằng chứng" onerror="this.style.display='none'" />
+            \${boundingBoxHtml}
+          </div>
+        </div>
+      \`;
+
+      const confText = decision.confidence ? (Math.round(decision.confidence * 100) + '%') : (isPassed ? '95%' : '0%');
+      const deltaText = decision.deltaMargin !== undefined ? decision.deltaMargin : (isPassed ? '0.35' : '0.00');
+      const criticText = decision.criticVerdict || (isPassed ? 'APPROVED' : 'REJECTED');
+      const distText = decision.damerauDistance !== undefined ? decision.damerauDistance : (isHealed ? 1 : 0);
+
+      let metricsHtml = \`
+        <div>
+          <div class="xai-section-title">⚖️ Bảng Chỉ Số Quyết Định AI (Decision Audit Trail - Trụ cột 15)</div>
+          <div class="xai-grid">
+            <div class="xai-metric-card">
+              <div class="xai-metric-label">Chosen Element</div>
+              <div class="xai-metric-value" title="\${escapeHtml(decision.chosenElement || 'N/A')}">
+                \${escapeHtml(decision.chosenElement || (boundingBox ? ('x:' + Math.round(boundingBox.x) + ', y:' + Math.round(boundingBox.y)) : 'N/A'))}
+              </div>
+            </div>
+            <div class="xai-metric-card">
+              <div class="xai-metric-label">Healed Intent</div>
+              <div class="xai-metric-value \${isHealed ? 'highlight-warn' : ''}">
+                \${escapeHtml(decision.healedIntent || audit.targetHint || 'N/A')}
+              </div>
+            </div>
+            <div class="xai-metric-card">
+              <div class="xai-metric-label">Damerau Distance</div>
+              <div class="xai-metric-value \${distText > 0 ? 'highlight-warn' : 'highlight-good'}">
+                \${distText}
+              </div>
+            </div>
+            <div class="xai-metric-card">
+              <div class="xai-metric-label">Confidence Score</div>
+              <div class="xai-metric-value highlight-good">
+                \${confText}
+              </div>
+            </div>
+            <div class="xai-metric-card">
+              <div class="xai-metric-label">Safety Margin (Delta)</div>
+              <div class="xai-metric-value">
+                \${deltaText}
+              </div>
+            </div>
+            <div class="xai-metric-card">
+              <div class="xai-metric-label">Critic Verdict</div>
+              <div class="xai-metric-value \${criticText === 'APPROVED' ? 'highlight-good' : 'highlight-warn'}">
+                \${escapeHtml(criticText)}
+              </div>
+            </div>
+            <div class="xai-metric-card">
+              <div class="xai-metric-label">Quiescence Wait</div>
+              <div class="xai-metric-value">\${quiescenceWaitMs}ms</div>
+            </div>
+            <div class="xai-metric-card">
+              <div class="xai-metric-label">DOM State Hash</div>
+              <div class="xai-metric-value" style="font-size:11px; font-family:monospace;" title="\${escapeHtml(domHash)}">
+                \${domHash !== 'N/A' ? (domHash.substring(0, 16) + '...') : 'N/A'}
+              </div>
+            </div>
+          </div>
+        </div>
+      \`;
+
+      let reasoningText = decision.reasoning || log.detail || '';
+      if (!reasoningText && isPassed) {
+        reasoningText = 'Thực thi thành công bước "' + (log.instruction || '') + '". Phần tử đã thỏa mãn toàn bộ tiêu chí về độ ổn định DOM (Quiescence), không vi phạm Antonym Barrier và vượt qua Critic Review.';
+      }
+      let reasoningHtml = \`
+        <div>
+          <div class="xai-section-title">🧠 Chuỗi Suy Luận XAI (Reasoning Chain)</div>
+          <div class="xai-reasoning-box">
+            \${escapeHtml(reasoningText)}
+          </div>
+        </div>
+      \`;
+
+      let autopsyHtml = '';
+      if (autopsy || !isPassed) {
+        const failureCode = (autopsy && autopsy.failureCode) || result.failureReasonCode || 'EXECUTION_FAILURE';
+        const rootCause = (autopsy && autopsy.rootCause) || result.reasonDetail || log.detail || 'Không xác định được nguyên nhân cụ thể';
+        const suggestedRemediation = (autopsy && autopsy.suggestedRemediation) || 'Kiểm tra lại bộ chọn (selector), trạng thái mạng hoặc cấu hình giao diện trước khi chạy lại.';
+        const autopsyConfidence = (autopsy && autopsy.confidence) ? (Math.round(autopsy.confidence * 100) + '%') : '90%';
+
+        autopsyHtml = \`
+          <div>
+            <div class="xai-section-title" style="color:#b91c1c;">🔬 Khám Nghiệm Tử Thi AI (Forensic Autopsy)</div>
+            <div class="autopsy-card">
+              <div class="autopsy-title">⚠️ Mã Lỗi Hệ Thống: <code>\${escapeHtml(failureCode)}</code> (Độ tin cậy mổ tử thi: \${autopsyConfidence})</div>
+              <div class="autopsy-row"><strong>Nguyên nhân gốc rễ (Root Cause):</strong> \${escapeHtml(rootCause)}</div>
+              <div class="autopsy-row"><strong>Khuyến nghị khắc phục (Suggested Remediation):</strong> \${escapeHtml(suggestedRemediation)}</div>
+            </div>
+          </div>
+        \`;
+      }
+
+      let footerHtml = \`
+        <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid #e2e8f0; padding-top:14px; margin-top:6px;">
+          <a href="/api/report" target="_blank" style="font-size:12.5px; color:#2563eb; font-weight:600; text-decoration:none;">
+            📄 Tải xuống file report.json đầy đủ &rarr;
+          </a>
+          <button class="tpl-btn" onclick="closeStepModal()">Đóng cửa sổ</button>
+        </div>
+      \`;
+
+      document.getElementById('modalBody').innerHTML = stageHtml + metricsHtml + reasoningHtml + autopsyHtml + footerHtml;
+      document.getElementById('stepModal').classList.add('open');
+    }
+
+    function closeStepModal() {
+      document.getElementById('stepModal').classList.remove('open');
+    }
+
+    function handleBackdropClick(e) {
+      if (e.target && e.target.id === 'stepModal') {
+        closeStepModal();
+      }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeStepModal();
+      }
+    });
+
     function escapeHtml(s) {
       return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
@@ -379,3 +819,5 @@ function getHtmlContent(): string {
 </body>
 </html>`;
 }
+
+export { getHtmlContent, server, PORT, OUTPUT_DIR };

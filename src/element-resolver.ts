@@ -1,7 +1,35 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import type { Page } from 'playwright';
 import { AtomicAction, DOMCandidate, ElementFingerprint } from './types';
-import { LLMBridge } from './llm-bridge';
+import {
+  AskGeminiVisionSoMOptions,
+  LLMBridge,
+  VisionSoMProvider,
+} from './llm-bridge';
+import {
+  resolveNamelessSvgCandidates,
+  ScoredSvgCandidate,
+  SvgIconCandidateInput,
+  SVG_AUTO_CLICK_MIN_MARGIN,
+  SVG_AUTO_CLICK_MIN_SCORE,
+} from './svg-icon-topology';
+import type {
+  BoundingBox,
+  ResolutionTier,
+  RoutingTelemetry,
+  RoutingTriggerReason,
+  SoMGenerationOptions,
+} from './vision-som';
+
+let cachedVisionSomModule: typeof import('./vision-som') | null = null;
+function getVisionSomModule(): typeof import('./vision-som') {
+  if (!cachedVisionSomModule) {
+    // Lazy require tránh lỗi khởi tạo vòng tròn CommonJS với ANTONYM_BARRIER_MATRIX
+    cachedVisionSomModule = require('./vision-som') as typeof import('./vision-som');
+  }
+  return cachedVisionSomModule;
+}
 
 const TRACE_CACHE_FILE = path.join(process.cwd(), 'output', 'trace_dataset.json');
 
@@ -215,7 +243,27 @@ export function resolvePortalOptionCandidate(
   return bestCandidate;
 }
 
-export type MatchSource = 'CACHE' | 'SEMANTIC_RULE' | 'FUZZY_HEALED' | 'LLM' | 'NONE';
+export type MatchSource =
+  | 'CACHE'
+  | 'SEMANTIC_RULE'
+  | 'FUZZY_HEALED'
+  | 'SVG_TOPOLOGY'
+  | 'VISION_SOM'
+  | 'LLM'
+  | 'NONE';
+
+export interface ResolveTargetOptions {
+  /** Playwright Page để kích hoạt L3 Vision SoM Fallback khi gặp Canvas/WebGL, nameless icon, hoặc vùng mờ tranh chấp */
+  page?: Page;
+  /** Provider Multimodal Vision SoM tùy chỉnh (test offline $0) */
+  visionProvider?: VisionSoMProvider;
+  /** Tùy chọn sinh Set-of-Marks overlay */
+  somOptions?: SoMGenerationOptions;
+  /** Tùy chọn gọi Gemini Multimodal Vision SoM */
+  visionOptions?: AskGeminiVisionSoMOptions;
+  /** Bật/tắt L3 Vision SoM fallback khi có page (mặc định true nếu có page và provider/API key) */
+  enableVisionSoM?: boolean;
+}
 
 export interface ResolveCandidateResult {
   candidate: DOMCandidate | null;
@@ -227,6 +275,18 @@ export interface ResolveCandidateResult {
   confidence?: number;
   deltaMargin?: number;
   criticVerdict?: 'APPROVED' | 'REJECTED';
+  /** Prompt 14: Tầng định tuyến L1 / L2 / L3 */
+  routingTier?: ResolutionTier;
+  /** Prompt 14: Lý do định tuyến tầng */
+  routingTriggerReason?: RoutingTriggerReason;
+  /** Prompt 14: Telemetry định tuyến đầy đủ sẵn sàng cho XAI Audit Trail */
+  routingTelemetry?: RoutingTelemetry;
+  /** Prompt 14: Mã số Mark ID Set-of-Marks nếu được giải quyết qua L3 Vision SoM */
+  somMarkId?: number | null;
+  /** Prompt 14: Bounding Box hình học gốc (hỗ trợ cả Canvas/WebGL không có DOMCandidate) */
+  resolvedBox?: BoundingBox | null;
+  /** Prompt 14: Tọa độ click vật lý tâm Bounding Box gốc */
+  clickPoint?: { x: number; y: number } | null;
 }
 
 export interface SafetyMarginResult {
@@ -694,8 +754,22 @@ export async function resolveTargetCandidate(
   url: string,
   action: AtomicAction,
   candidates: DOMCandidate[],
-  screenshotBase64?: string
+  screenshotBase64?: string,
+  options?: ResolveTargetOptions
 ): Promise<ResolveCandidateResult> {
+  const resolveStartMs = performance.now();
+  const elapsedMs = () => Math.round((performance.now() - resolveStartMs) * 1000) / 1000;
+  const visionSom = getVisionSomModule();
+  const hasVisionProviderOrKey = Boolean(
+    options?.visionProvider ||
+      options?.visionOptions?.provider ||
+      LLMBridge.getVisionSoMProvider() ||
+      options?.visionOptions?.apiKey ||
+      process.env.GEMINI_API_KEY
+  );
+  const canRunVisionSoM =
+    options?.enableVisionSoM !== false && Boolean(options?.page) && hasVisionProviderOrKey;
+
   // 1. Trường hợp SELECT_ITEM ("Chọn sản phẩm / video / kết quả đầu tiên / thứ N")
   if (action.type === 'SELECT_ITEM') {
     const targetIdx = action.itemIndex || 1;
@@ -772,15 +846,104 @@ export async function resolveTargetCandidate(
     return true;
   });
 
-  if (compatibleCandidates.length === 0) {
-    return { candidate: null, matchSource: 'NONE' };
+  const isCanvasOnlyList =
+    compatibleCandidates.length > 0 &&
+    compatibleCandidates.every((c) => c.tag.toLowerCase() === 'canvas');
+
+  if (compatibleCandidates.length === 0 || isCanvasOnlyList) {
+    // Prompt 14 (L3 Vision SoM Fallback): Giao diện <canvas>/WebGL hoặc 0 DOM candidate
+    if (canRunVisionSoM && options?.page) {
+      const tieredCanvasRes = await visionSom.executeTieredResolution({
+        action,
+        candidates: isCanvasOnlyList ? compatibleCandidates : [],
+        page: options.page,
+        visionProvider: options.visionProvider,
+        somOptions: options.somOptions,
+        visionOptions: options.visionOptions,
+        isCanvasOrWebGL: isCanvasOnlyList ? true : undefined,
+      });
+      if (tieredCanvasRes.resolved && (tieredCanvasRes.candidate || tieredCanvasRes.resolvedBox)) {
+        if (tieredCanvasRes.candidate) {
+          saveTraceRecord(url, action, tieredCanvasRes.candidate.fingerprint);
+        }
+        return {
+          candidate: tieredCanvasRes.candidate,
+          matchSource: 'VISION_SOM',
+          reasoning: tieredCanvasRes.reasoning,
+          confidence: 0.9,
+          criticVerdict: 'APPROVED',
+          routingTier: 'L3',
+          routingTriggerReason: tieredCanvasRes.triggerReason,
+          routingTelemetry: tieredCanvasRes.telemetry,
+          somMarkId: tieredCanvasRes.somMarkId,
+          resolvedBox: tieredCanvasRes.resolvedBox,
+          clickPoint: tieredCanvasRes.clickPoint,
+        };
+      }
+      return {
+        candidate: null,
+        matchSource: 'NONE',
+        reasoning: tieredCanvasRes.reasoning,
+        flag: tieredCanvasRes.flag,
+        routingTier: 'L3',
+        routingTriggerReason: tieredCanvasRes.triggerReason,
+        routingTelemetry: tieredCanvasRes.telemetry,
+      };
+    }
+
+    return {
+      candidate: null,
+      matchSource: 'NONE',
+      routingTier: 'L3',
+      routingTriggerReason: isCanvasOnlyList ? 'CANVAS_OR_WEBGL_SURFACE' : 'NO_DOM_CANDIDATES',
+    };
   }
 
-  // 3. Fast-Path Heuristic Scoring & Fuzzy Intent Self-Healing
+  // 3. Fast-Path Heuristic Scoring, Fuzzy Intent Self-Healing & Prompt 12 Nameless SVG Topology
   const keywords = expandKeywords(action.targetHint);
   const contextKeywords = expandKeywords(action.contextHint);
   const targetRaw = normalizeClean(action.targetHint || action.subInstruction || '');
   const targetNoAccent = removeVietnameseDiacritics(targetRaw);
+  const svgQueryHint = action.targetHint || action.subInstruction || '';
+
+  // Prompt 12: Chấm điểm 4 trọng số cho nhóm ứng viên Icon SVG không nhãn (nếu có)
+  const svgScoredByCandidateId = new Map<number, ScoredSvgCandidate>();
+  if (svgQueryHint && (action.type === 'CLICK' || action.type === 'HOVER')) {
+    const svgInputs: SvgIconCandidateInput[] = [];
+    for (const c of compatibleCandidates) {
+      const hasVisibleText = Boolean((c.text || '').trim());
+      const hasAriaLabel = Boolean((c.ariaLabel || '').trim());
+      if (hasVisibleText || hasAriaLabel) continue;
+      if (c.svgTopologyData && typeof c.svgTopologyData === 'object') {
+        svgInputs.push({
+          ...(c.svgTopologyData as SvgIconCandidateInput),
+          candidateId: c.candidateId,
+          selector: c.selectorPath,
+        });
+      } else if (c.svgMarkup) {
+        svgInputs.push({
+          candidateId: c.candidateId,
+          selector: c.selectorPath,
+          tag: c.tag,
+          elemId: c.elemId,
+          rect: c.rect,
+          svg: c.svgMarkup,
+          sidebars: [],
+          aria: {
+            ariaExpanded: c.ariaExpanded ?? null,
+            ariaControls: c.ariaControls ?? null,
+          },
+        });
+      }
+    }
+
+    if (svgInputs.length > 0) {
+      const svgRes = resolveNamelessSvgCandidates(svgInputs, svgQueryHint);
+      for (const sc of svgRes.candidates) {
+        svgScoredByCandidateId.set(sc.candidateId, sc);
+      }
+    }
+  }
 
   interface ScoredCandidate {
     candidate: DOMCandidate;
@@ -788,6 +951,8 @@ export async function resolveTargetCandidate(
     damerauDist?: number;
     damerauSim?: number;
     isFuzzyHealed: boolean;
+    isSvgTopologyScored: boolean;
+    svgReasoning?: string;
     hasAntonymViolation: boolean;
     antonymReason?: string;
   }
@@ -810,6 +975,7 @@ export async function resolveTargetCandidate(
         candidate: cand,
         score: 0,
         isFuzzyHealed: false,
+        isSvgTopologyScored: false,
         hasAntonymViolation: true,
         antonymReason: antonymCheck.reason,
       });
@@ -820,6 +986,8 @@ export async function resolveTargetCandidate(
     let candDamerauDist: number | undefined;
     let candDamerauSim: number | undefined;
     let candIsFuzzy = false;
+    let candIsSvgTopology = false;
+    let candSvgReasoning: string | undefined;
 
     const textNorm = normalizeClean(cand.text);
     const textNoAccent = removeVietnameseDiacritics(textNorm);
@@ -829,11 +997,28 @@ export async function resolveTargetCandidate(
     const idNorm = normalizeClean(cand.elemId);
     const hrefNorm = normalizeClean(cand.href);
     const ariaNorm = normalizeClean(cand.ariaLabel);
+    const virtualLabelNorm = normalizeClean(cand.virtualLabel);
+    const virtualLabelNoAccent = removeVietnameseDiacritics(virtualLabelNorm);
     const groupNorm = normalizeClean(cand.groupContext);
     const classNorm = normalizeClean(cand.fingerprint?.stableClasses?.join(' ') || '');
     const valueNorm = normalizeClean(cand.value);
 
-    // 3.1. So khớp từ khóa chính xác & từ điển ngữ nghĩa
+    // 3.0. Prompt 12: Ưu tiên điểm 4 trọng số SVG Topology cho nút SVG không nhãn
+    const svgScored = svgScoredByCandidateId.get(cand.candidateId);
+    if (svgScored) {
+      cand.svgScore = svgScored.scoreBreakdown.score;
+      cand.virtualLabel = svgScored.virtualLabel || cand.virtualLabel;
+      cand.svgIconFamily = svgScored.signature.family;
+      cand.svgContext = svgScored.context;
+      const svgPct = Math.round(svgScored.scoreBreakdown.score * 100);
+      if (svgPct > score) {
+        score = svgPct;
+        candIsSvgTopology = true;
+        candSvgReasoning = svgScored.scoreBreakdown.reasoning;
+      }
+    }
+
+    // 3.1. So khớp từ khóa chính xác & từ điển ngữ nghĩa (hỗ trợ cả virtualLabel cho Prompt 12)
     for (const kw of keywords) {
       if (textNorm === kw || valueNorm === kw || textNoAccent === kw) score = Math.max(score, 100);
       if (placeholderNorm === kw || nearLabelNorm === kw || ariaNorm === kw) score = Math.max(score, 95);
@@ -848,6 +1033,20 @@ export async function resolveTargetCandidate(
       if (idNorm && idNorm.includes(kw)) score = Math.max(score, 78);
       if (hrefNorm && hrefNorm.includes(kw)) score = Math.max(score, 75);
       if (classNorm && classNorm.includes(kw)) score = Math.max(score, 70);
+
+      // Khi ứng viên có virtualLabel (Prompt 12) nhưng không có raw SVG geometry để chấm 4 trọng số
+      if (!svgScored && virtualLabelNorm) {
+        if (virtualLabelNorm === kw || virtualLabelNoAccent === kw) {
+          score = Math.max(score, 92);
+          candIsSvgTopology = true;
+        } else if (
+          virtualLabelNorm.includes(kw) ||
+          (virtualLabelNoAccent && virtualLabelNoAccent.includes(kw))
+        ) {
+          score = Math.max(score, 86);
+          candIsSvgTopology = true;
+        }
+      }
     }
 
     // 3.2. TRỤ CỘT 4: Damerau-Levenshtein Distance & Fuzzy Intent Self-Healing
@@ -885,6 +1084,7 @@ export async function resolveTargetCandidate(
             candDamerauDist = bestFuzzy.distance;
             candDamerauSim = bestFuzzy.similarity;
             candIsFuzzy = true;
+            candIsSvgTopology = false;
           }
         }
       }
@@ -894,7 +1094,18 @@ export async function resolveTargetCandidate(
     if (targetRaw.length >= 3) {
       const overlapText = computeTokenOverlapScore(targetRaw, textNorm);
       const overlapLabel = computeTokenOverlapScore(targetRaw, nearLabelNorm || placeholderNorm);
-      score = Math.max(score, overlapText, overlapLabel);
+      const overlapVirtual = !svgScored && virtualLabelNorm
+        ? Math.max(
+            computeTokenOverlapScore(targetRaw, virtualLabelNorm),
+            computeTokenOverlapScore(targetNoAccent, virtualLabelNoAccent)
+          )
+        : 0;
+      if (overlapVirtual > Math.max(score, overlapText, overlapLabel)) {
+        score = overlapVirtual;
+        candIsSvgTopology = true;
+      } else {
+        score = Math.max(score, overlapText, overlapLabel);
+      }
     }
 
     // 3.4. Điểm thưởng ngữ cảnh nhóm
@@ -905,7 +1116,8 @@ export async function resolveTargetCandidate(
     }
 
     // 3.5. Điểm thưởng / phạt theo tính chất phần tử tương tác
-    if (action.type === 'CLICK' || action.type === 'HOVER') {
+    // Lưu ý Prompt 12: Không cộng thêm +15 vào điểm đã hiệu chuẩn [0..100] của SVG Topology để giữ nguyên ngưỡng 85%
+    if (!candIsSvgTopology && (action.type === 'CLICK' || action.type === 'HOVER')) {
       if (cand.tag === 'button' || cand.type === 'submit' || cand.role === 'button' || cand.tag === 'option') {
         score += 15;
       } else if (cand.tag === 'a' || cand.role === 'link') {
@@ -936,6 +1148,8 @@ export async function resolveTargetCandidate(
       damerauDist: candDamerauDist,
       damerauSim: candDamerauSim,
       isFuzzyHealed: candIsFuzzy,
+      isSvgTopologyScored: candIsSvgTopology,
+      svgReasoning: candSvgReasoning,
       hasAntonymViolation: false,
     });
   }
@@ -946,13 +1160,31 @@ export async function resolveTargetCandidate(
     compatibleCandidates.every((c) => (c as any).antonymViolation);
 
   if (allViolated) {
+    const lat = elapsedMs();
+    const reason =
+      antonymViolationDetail ||
+      '[ANTYNOM_VIOLATION] Toàn bộ ứng viên trên màn hình đều đối lập với mục tiêu.';
     return {
       candidate: null,
       matchSource: 'NONE',
       flag: 'ANTYNOM_VIOLATION',
-      reasoning:
-        antonymViolationDetail ||
-        '[ANTYNOM_VIOLATION] Toàn bộ ứng viên trên màn hình đều đối lập với mục tiêu.',
+      reasoning: reason,
+      routingTier: 'L2',
+      routingTriggerReason: 'ANTONYM_BARRIER_BLOCKED',
+      routingTelemetry: {
+        tier: 'L2',
+        triggerReason: 'ANTONYM_BARRIER_BLOCKED',
+        latencyMs: lat,
+        estimatedCostUsd: 0,
+        apiCalled: false,
+        top1ScoreNormalized: 0,
+        top2ScoreNormalized: 0,
+        marginDeltaNormalized: 0,
+        isCanvasOrWebGL: false,
+        isNamelessIcon: false,
+        antonymBlocked: true,
+        reasoning: reason,
+      },
     };
   }
 
@@ -967,6 +1199,8 @@ export async function resolveTargetCandidate(
       matchSource: 'NONE',
       flag: hasAntonymViolation ? 'ANTYNOM_VIOLATION' : undefined,
       reasoning: hasAntonymViolation ? antonymViolationDetail : undefined,
+      routingTier: hasAntonymViolation ? 'L2' : 'L3',
+      routingTriggerReason: hasAntonymViolation ? 'ANTONYM_BARRIER_BLOCKED' : 'NO_DOM_CANDIDATES',
     };
   }
 
@@ -979,27 +1213,133 @@ export async function resolveTargetCandidate(
   // TRỤ CỘT 3: TÍNH TOÁN SAFETY MARGIN (DELTA MARGIN >= 20%)
   const marginResult = computeSafetyMargin(top1Score, top2Score);
 
-  // 3.6. Fast-Path Chấp nhận tức thì (0ms) khi ĐỘC TÔN VÀ AN TOÀN
+  const top1IsNamelessIcon = Boolean(
+    top1 && (top1.isSvgTopologyScored || visionSom.isNamelessIconCandidate(top1.candidate))
+  );
+
+  // PROMPT 14: ĐỊNH TUYẾN 3 TẦNG (L1 Fast-Path >= 95% & Delta >= 30% -> L2 Typo/Antonym >= 85% & Delta >= 20% -> L3 Vision SoM)
+  const tierDecision = visionSom.routeResolutionTier({
+    top1Score: marginResult.top1Norm,
+    top2Score: marginResult.top2Norm,
+    marginDelta: marginResult.deltaMargin,
+    isTypoHealed: top1.isFuzzyHealed,
+    damerauDistance: top1.damerauDist,
+    antonymBlocked: false,
+    isCanvasOrWebGL: false,
+    isNamelessIcon: top1IsNamelessIcon,
+    candidateCount: validCandidates.length,
+  });
+
+  // 3.6. Tầng L1 / L2 Chấp nhận tức thì ($0, <2ms / <8ms) khi ĐỘC TÔN VÀ AN TOÀN
   // Điều kiện: Điểm Top 1 >= 85% VÀ Delta Margin >= 20% (isAmbiguous = false)
-  if (!marginResult.isAmbiguous && top1 && top1.score >= 85) {
+  if (!marginResult.isAmbiguous && top1 && top1.score >= 85 && (tierDecision.tier === 'L1' || tierDecision.tier === 'L2')) {
+    const lat = elapsedMs();
     saveTraceRecord(url, action, top1.candidate.fingerprint);
+    const matchSource: MatchSource = top1.isSvgTopologyScored
+      ? 'SVG_TOPOLOGY'
+      : top1.isFuzzyHealed
+        ? 'FUZZY_HEALED'
+        : 'SEMANTIC_RULE';
+    const reasoning = top1.isSvgTopologyScored
+      ? top1.svgReasoning ||
+        `Định danh thành công nút SVG không nhãn (virtualLabel="${top1.candidate.virtualLabel || ''}", Context="${top1.candidate.svgContext || ''}", Score=${top1.score}%, Delta Margin=${(marginResult.deltaMargin * 100).toFixed(1)}%)`
+      : top1.isFuzzyHealed
+        ? `Tự phục hồi lỗi chính tả qua Damerau-Levenshtein (Khoảng cách = ${top1.damerauDist}, Độ tương đồng = ${top1.damerauSim}, Delta Margin = ${(marginResult.deltaMargin * 100).toFixed(1)}%, Mục tiêu "${action.targetHint}" -> "${top1.candidate.text || top1.candidate.nearLabel || top1.candidate.placeholder || top1.candidate.name}")`
+        : `Xác định chính xác phần tử mục tiêu (Điểm = ${top1.score}, Delta Margin = ${(marginResult.deltaMargin * 100).toFixed(1)}% >= 20%)`;
+
     return {
       candidate: top1.candidate,
-      matchSource: top1.isFuzzyHealed ? 'FUZZY_HEALED' : 'SEMANTIC_RULE',
-      reasoning: top1.isFuzzyHealed
-        ? `Tự phục hồi lỗi chính tả qua Damerau-Levenshtein (Khoảng cách = ${top1.damerauDist}, Độ tương đồng = ${top1.damerauSim}, Delta Margin = ${(marginResult.deltaMargin * 100).toFixed(1)}%, Mục tiêu "${action.targetHint}" -> "${top1.candidate.text || top1.candidate.nearLabel || top1.candidate.placeholder || top1.candidate.name}")`
-        : `Xác định chính xác phần tử mục tiêu (Điểm = ${top1.score}, Delta Margin = ${(marginResult.deltaMargin * 100).toFixed(1)}% >= 20%)`,
+      matchSource,
+      reasoning,
       damerauDistance: top1.damerauDist,
       similarity: top1.damerauSim,
       confidence: marginResult.top1Norm,
       deltaMargin: marginResult.deltaMargin,
       criticVerdict: 'APPROVED',
+      routingTier: tierDecision.tier,
+      routingTriggerReason: tierDecision.triggerReason,
+      resolvedBox: { ...top1.candidate.rect },
+      clickPoint: top1.candidate.safeClickPoint || {
+        x: top1.candidate.rect.x + top1.candidate.rect.width / 2,
+        y: top1.candidate.rect.y + top1.candidate.rect.height / 2,
+      },
+      routingTelemetry: {
+        tier: tierDecision.tier,
+        triggerReason: tierDecision.triggerReason,
+        latencyMs: lat,
+        estimatedCostUsd: 0,
+        apiCalled: false,
+        top1ScoreNormalized: marginResult.top1Norm,
+        top2ScoreNormalized: marginResult.top2Norm,
+        marginDeltaNormalized: marginResult.deltaMargin,
+        isCanvasOrWebGL: false,
+        isNamelessIcon: top1IsNamelessIcon,
+        antonymBlocked: false,
+        damerauDistance: top1.damerauDist,
+        damerauSimilarity: top1.damerauSim,
+        somMarkId: null,
+        resolvedBox: { ...top1.candidate.rect },
+        reasoning,
+      },
     };
   }
 
-  // 4. TRỤ CỘT 6: KÍCH HOẠT QUY TRÌNH ĐA THỂ THỨC ACTOR-CRITIC PIPELINE
-  // Kích hoạt khi trạng thái AMBIGUOUS (Delta Margin < 20% hoặc Top 1 < 85%)
+  // 4. PROMPT 14 (TẦNG L3 VISION SoM FALLBACK):
+  // Chỉ kích hoạt khi L1/L2 không đạt ngưỡng (Canvas/WebGL, nameless icon failure, hoặc vùng mờ tranh chấp Delta < 20%)
+  // VÀ caller đã cung cấp Playwright Page + Vision provider/API key.
   const eligibleCandidates = validCandidates.map((vc) => vc.candidate);
+  if (tierDecision.tier === 'L3' && canRunVisionSoM && options?.page) {
+    const tieredVisionRes = await visionSom.executeTieredResolution({
+      action,
+      candidates: eligibleCandidates,
+      page: options.page,
+      visionProvider: options.visionProvider,
+      somOptions: options.somOptions,
+      visionOptions: options.visionOptions,
+      top1Score: marginResult.top1Norm,
+      top2Score: marginResult.top2Norm,
+      marginDelta: marginResult.deltaMargin,
+      isNamelessIcon: top1IsNamelessIcon,
+    });
+
+    if (tieredVisionRes.antonymBlocked) {
+      return {
+        candidate: null,
+        matchSource: 'NONE',
+        flag: 'ANTYNOM_VIOLATION',
+        reasoning: tieredVisionRes.reasoning,
+        criticVerdict: 'REJECTED',
+        deltaMargin: marginResult.deltaMargin,
+        routingTier: 'L3',
+        routingTriggerReason: tieredVisionRes.triggerReason,
+        routingTelemetry: tieredVisionRes.telemetry,
+        somMarkId: tieredVisionRes.somMarkId,
+      };
+    }
+
+    if (tieredVisionRes.resolved && (tieredVisionRes.candidate || tieredVisionRes.resolvedBox)) {
+      if (tieredVisionRes.candidate) {
+        saveTraceRecord(url, action, tieredVisionRes.candidate.fingerprint);
+      }
+      return {
+        candidate: tieredVisionRes.candidate,
+        matchSource: 'VISION_SOM',
+        reasoning: tieredVisionRes.reasoning,
+        criticVerdict: 'APPROVED',
+        confidence: 0.9,
+        deltaMargin: marginResult.deltaMargin,
+        routingTier: 'L3',
+        routingTriggerReason: tieredVisionRes.triggerReason,
+        routingTelemetry: tieredVisionRes.telemetry,
+        somMarkId: tieredVisionRes.somMarkId,
+        resolvedBox: tieredVisionRes.resolvedBox,
+        clickPoint: tieredVisionRes.clickPoint,
+      };
+    }
+  }
+
+  // 4.1. TRỤ CỘT 6: KÍCH HOẠT QUY TRÌNH ĐA THỂ THỨC ACTOR-CRITIC PIPELINE
+  // Kích hoạt khi trạng thái AMBIGUOUS (Delta Margin < 20% hoặc Top 1 < 85%)
   const actorCriticRes = await LLMBridge.runActorCriticPipeline(
     action.subInstruction,
     action.type,
@@ -1020,6 +1360,8 @@ export async function resolveTargetCandidate(
         criticVerdict: 'REJECTED',
         deltaMargin: marginResult.deltaMargin,
         confidence: actorCriticRes.criticEvaluation?.confidence,
+        routingTier: 'L3',
+        routingTriggerReason: tierDecision.triggerReason,
       };
     }
 
@@ -1037,6 +1379,8 @@ export async function resolveTargetCandidate(
           reasoning: `[CRITIC VETO] Phủ quyết đề xuất của Actor do vi phạm Hàng rào từ trái nghĩa: ${antonymCheck.reason}`,
           criticVerdict: 'REJECTED',
           deltaMargin: marginResult.deltaMargin,
+          routingTier: 'L3',
+          routingTriggerReason: 'ANTONYM_BARRIER_BLOCKED',
         };
       }
 
@@ -1048,6 +1392,8 @@ export async function resolveTargetCandidate(
         criticVerdict: 'APPROVED',
         confidence: actorCriticRes.actorProposal?.confidence ?? marginResult.top1Norm,
         deltaMargin: marginResult.deltaMargin,
+        routingTier: 'L3',
+        routingTriggerReason: tierDecision.triggerReason,
       };
     }
   }
@@ -1061,11 +1407,20 @@ export async function resolveTargetCandidate(
       reasoning: `[AMBIGUOUS_TARGET] Phát hiện ${validCandidates.length} ứng viên có độ tương đồng ngang nhau (Top 1 = ${top1Score}, Top 2 = ${top2Score}, Delta = 0%) nhưng không có AI giải quyết.`,
       deltaMargin: marginResult.deltaMargin,
       confidence: marginResult.top1Norm,
+      routingTier: 'L3',
+      routingTriggerReason: 'AMBIGUOUS_DISPUTE_ZONE',
     };
   }
 
   // 6. Fallback điểm chấp nhận được (>= 70) khi LLM offline và không phải hòa điểm tuyệt đối
-  if (top1 && top1.score >= 70) {
+  // Prompt 12 Guardrail: Nút SVG không nhãn bắt buộc phải đạt Score >= 85% & Delta >= 20%, không rơi vào fallback 70%
+  if (
+    top1 &&
+    top1.score >= 70 &&
+    (!top1.isSvgTopologyScored ||
+      (top1.score >= SVG_AUTO_CLICK_MIN_SCORE * 100 &&
+        marginResult.deltaMargin >= SVG_AUTO_CLICK_MIN_MARGIN))
+  ) {
     saveTraceRecord(url, action, top1.candidate.fingerprint);
     return {
       candidate: top1.candidate,
@@ -1077,6 +1432,8 @@ export async function resolveTargetCandidate(
       similarity: top1.damerauSim,
       confidence: marginResult.top1Norm,
       deltaMargin: marginResult.deltaMargin,
+      routingTier: 'L2',
+      routingTriggerReason: tierDecision.triggerReason,
     };
   }
 
@@ -1087,6 +1444,8 @@ export async function resolveTargetCandidate(
     flag: hasAntonymViolation ? 'ANTYNOM_VIOLATION' : undefined,
     reasoning: hasAntonymViolation ? antonymViolationDetail : undefined,
     deltaMargin: marginResult.deltaMargin,
+    routingTier: tierDecision.tier,
+    routingTriggerReason: tierDecision.triggerReason,
   };
 }
 

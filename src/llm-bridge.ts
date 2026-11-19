@@ -44,6 +44,242 @@ export interface ActorCriticResult {
   isVetoed?: boolean;
 }
 
+export interface VisionSoMRequest {
+  imageBase64: string;
+  action: string;
+  targetHint: string;
+  markCount: number;
+  prompt: string;
+  validMarkIds: number[];
+}
+
+export interface VisionSoMProviderResponse {
+  id: number | string | null;
+  reason?: string;
+  rawResponse?: string;
+  provider?: string;
+}
+
+export type VisionSoMProvider = (
+  request: VisionSoMRequest
+) => Promise<VisionSoMProviderResponse | string | null>;
+
+export interface AskGeminiVisionSoMOptions {
+  /** Pluggable multimodal provider (dùng cho test offline hoặc custom backend) */
+  provider?: VisionSoMProvider;
+  /** Danh sách ID hợp lệ (mặc định 1..markCount) */
+  validMarkIds?: number[];
+  /** Ghi đè tên model Gemini Multimodal */
+  model?: string;
+  /** Ghi đè Gemini API key (mặc định process.env.GEMINI_API_KEY) */
+  apiKey?: string;
+  /** Thời gian chờ tối đa (ms) */
+  timeoutMs?: number;
+  /** Custom fetch để test payload HTTP mà không cần gọi mạng thật */
+  fetchFn?: typeof fetch;
+}
+
+export interface VisionSoMResult {
+  /** ID số nguyên hợp lệ trong tập SoM, hoặc null nếu bị từ chối / không khả dụng */
+  id: number | null;
+  /** Lý do lựa chọn hoặc lý do từ chối */
+  reason: string;
+  /** Có gọi tới AI API / Multimodal provider hay không */
+  apiCalled: boolean;
+  /** ID trả về có vượt qua bộ lọc chống ảo giác hợp lệ hay không */
+  valid: boolean;
+  /** Cờ báo hiệu đã chặn phản hồi ảo giác (out-of-range / không phải số nguyên / tọa độ giả) */
+  rejectedHallucination?: boolean;
+  /** Giá trị ID thô AI trả về trước khi kiểm duyệt */
+  rawReturnedId?: unknown;
+  /** Nguồn xử lý ('custom-provider' | 'gemini-multimodal' | 'none') */
+  provider: string;
+  /** Chuỗi prompt chuẩn đã gửi đi */
+  prompt: string;
+  /** Độ trễ thực thi (ms) */
+  latencyMs: number;
+}
+
+/**
+ * Tạo prompt chuẩn Prompt 14 (Set-of-Marks Visual Indexing) gửi tới Gemini Multimodal API.
+ */
+export function buildVisionSoMPrompt(
+  action: string,
+  targetHint: string,
+  markCount: number
+): string {
+  const safeAction = (action || 'CLICK').trim();
+  const safeTarget = (targetHint || '').trim();
+  return (
+    `Để thực hiện hành động [${safeAction}] trên mục tiêu [${safeTarget}], hãy chọn ID số mấy? ` +
+    `Chỉ trả về JSON {"id": <number>, "reason": "..."} ` +
+    `(ID hợp lệ từ 1 đến ${markCount}, hoặc null nếu không tìm thấy; tuyệt đối không tự đoán tọa độ pixel).`
+  );
+}
+
+/**
+ * Bộ phân tích và kiểm duyệt nghiêm ngặt Mark ID trả về từ Multimodal Vision AI.
+ * Chỉ chấp nhận duy nhất số nguyên nằm trong tập validIds -> Triệt tiêu 100% ảo giác tọa độ pixel.
+ */
+export function parseAndValidateSoMMarkId(
+  rawResponse: VisionSoMProviderResponse | string | null,
+  validIds: Set<number>,
+  markCount: number
+): {
+  id: number | null;
+  reason: string;
+  valid: boolean;
+  rejectedHallucination: boolean;
+  rawReturnedId?: unknown;
+} {
+  if (rawResponse === null || rawResponse === undefined) {
+    return {
+      id: null,
+      reason: 'Multimodal provider không trả về phản hồi',
+      valid: false,
+      rejectedHallucination: false,
+    };
+  }
+
+  let rawId: unknown = undefined;
+  let parsedReason = '';
+
+  if (typeof rawResponse === 'string') {
+    const trimmed = rawResponse.trim();
+    if (!trimmed) {
+      return {
+        id: null,
+        reason: 'Phản hồi Multimodal trống',
+        valid: false,
+        rejectedHallucination: false,
+      };
+    }
+
+    const cleaned = trimmed
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```\s*$/i, '')
+      .trim();
+
+    let parsedObj: any = null;
+    try {
+      parsedObj = JSON.parse(cleaned);
+    } catch {
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          parsedObj = JSON.parse(jsonMatch[0]);
+        } catch {
+          parsedObj = null;
+        }
+      }
+    }
+
+    if (parsedObj && typeof parsedObj === 'object' && !Array.isArray(parsedObj)) {
+      const hasIdProp =
+        Object.prototype.hasOwnProperty.call(parsedObj, 'id') ||
+        Object.prototype.hasOwnProperty.call(parsedObj, 'markId');
+      if (!hasIdProp) {
+        return {
+          id: null,
+          reason: `[ANTI-HALLUCINATION] Phản hồi JSON thiếu trường "id" hợp lệ (nghi vấn ảo giác tọa độ/selector): "${cleaned.slice(0, 120)}"`,
+          valid: false,
+          rejectedHallucination: true,
+          rawReturnedId: parsedObj,
+        };
+      }
+      rawId = Object.prototype.hasOwnProperty.call(parsedObj, 'id')
+        ? parsedObj.id
+        : parsedObj.markId;
+      parsedReason =
+        typeof parsedObj.reason === 'string'
+          ? parsedObj.reason
+          : typeof parsedObj.reasoning === 'string'
+            ? parsedObj.reasoning
+            : '';
+    } else if (/^\[?\s*-?\d+(?:\.\d+)?\s*\]?$/.test(cleaned)) {
+      const numMatch = cleaned.match(/-?\d+(?:\.\d+)?/);
+      rawId = numMatch ? Number(numMatch[0]) : cleaned;
+      parsedReason = 'AI trả về trực tiếp mã số Mark ID';
+    } else {
+      return {
+        id: null,
+        reason: `[ANTI-HALLUCINATION] Phản hồi không chứa JSON Mark ID hợp lệ: "${cleaned.slice(0, 120)}"`,
+        valid: false,
+        rejectedHallucination: true,
+        rawReturnedId: cleaned,
+      };
+    }
+  } else if (typeof rawResponse === 'object') {
+    const respObj = rawResponse as unknown as Record<string, unknown>;
+    const hasIdProp =
+      Object.prototype.hasOwnProperty.call(respObj, 'id') ||
+      Object.prototype.hasOwnProperty.call(respObj, 'markId');
+    if (!hasIdProp) {
+      return {
+        id: null,
+        reason: `[ANTI-HALLUCINATION] Phản hồi object thiếu trường "id" hợp lệ (nghi vấn ảo giác tọa độ/selector).`,
+        valid: false,
+        rejectedHallucination: true,
+        rawReturnedId: rawResponse,
+      };
+    }
+    rawId = Object.prototype.hasOwnProperty.call(respObj, 'id')
+      ? respObj.id
+      : respObj.markId;
+    parsedReason = typeof respObj.reason === 'string' ? respObj.reason : '';
+  }
+
+  if (rawId === null) {
+    return {
+      id: null,
+      reason: parsedReason || 'AI xác nhận không tìm thấy mục tiêu phù hợp trên ảnh SoM',
+      valid: false,
+      rejectedHallucination: false,
+      rawReturnedId: null,
+    };
+  }
+
+  if (rawId === undefined) {
+    return {
+      id: null,
+      reason: '[ANTI-HALLUCINATION] Trường "id" bị thiếu (undefined) trong phản hồi Vision SoM.',
+      valid: false,
+      rejectedHallucination: true,
+      rawReturnedId: undefined,
+    };
+  }
+
+  let numericId: number | null = null;
+  if (typeof rawId === 'number') {
+    if (Number.isInteger(rawId)) {
+      numericId = rawId;
+    }
+  } else if (typeof rawId === 'string') {
+    const cleanStr = rawId.trim().replace(/^\[/, '').replace(/\]$/, '').trim();
+    if (/^\d+$/.test(cleanStr)) {
+      numericId = Number.parseInt(cleanStr, 10);
+    }
+  }
+
+  if (numericId === null || !Number.isInteger(numericId) || !validIds.has(numericId)) {
+    return {
+      id: null,
+      reason: `[ANTI-HALLUCINATION] Từ chối Mark ID không hợp lệ (${JSON.stringify(rawId)}; phạm vi hợp lệ: 1..${markCount}) để chống ảo giác tọa độ.`,
+      valid: false,
+      rejectedHallucination: true,
+      rawReturnedId: rawId,
+    };
+  }
+
+  return {
+    id: numericId,
+    reason: parsedReason || `Vision SoM chọn chính xác Mark [${numericId}]`,
+    valid: true,
+    rejectedHallucination: false,
+    rawReturnedId: rawId,
+  };
+}
+
 /**
  * UNIVERSAL LLM BRIDGE (AI-FIRST MULTIMODAL EDITION)
  * Cầu nối AI thông minh 4 tầng để giải quyết bài toán trên BẤT KỲ trang web thực tế nào:
@@ -54,6 +290,18 @@ export interface ActorCriticResult {
  */
 export class LLMBridge {
   private static agyPath: string | null = null;
+  private static customVisionSoMProvider: VisionSoMProvider | null = null;
+
+  /**
+   * Đăng ký provider Multimodal Vision SoM tùy chỉnh (hỗ trợ test offline deterministic với chi phí $0).
+   */
+  public static setVisionSoMProvider(provider: VisionSoMProvider | null): void {
+    this.customVisionSoMProvider = provider;
+  }
+
+  public static getVisionSoMProvider(): VisionSoMProvider | null {
+    return this.customVisionSoMProvider;
+  }
 
   private static getAgyExePath(): string | null {
     if (this.agyPath !== null) return this.agyPath;
@@ -614,4 +862,191 @@ Tuyệt đối KHÔNG viết markdown hay giải thích gì thêm, chỉ trả v
 
     return null;
   }
+
+  /**
+   * Prompt 14 (Set-of-Marks Visual Indexing - Dual-Stream Multimodal Vision):
+   * Gửi ảnh đã gắn nhãn số [1], [2], [3]... lên Gemini Multimodal API (hoặc provider tùy chỉnh)
+   * kèm câu hỏi chuẩn và chỉ nhận duy nhất numeric Mark ID hợp lệ để map ngược về Bounding Box gốc
+   * -> Triệt tiêu 100% ảo giác đoán mò tọa độ pixel.
+   */
+  public static async askGeminiVisionSoM(
+    imageBase64: string,
+    action: string,
+    targetHint: string,
+    markCount: number,
+    options: AskGeminiVisionSoMOptions = {}
+  ): Promise<VisionSoMResult> {
+    const t0 = performance.now();
+    const prompt = buildVisionSoMPrompt(action, targetHint, markCount);
+
+    const validMarkIds =
+      options.validMarkIds && options.validMarkIds.length > 0
+        ? Array.from(new Set(options.validMarkIds.filter((n) => Number.isInteger(n) && n > 0)))
+        : Array.from({ length: Math.max(0, markCount) }, (_, idx) => idx + 1);
+    const validIdSet = new Set<number>(validMarkIds);
+
+    const elapsed = () => Math.round((performance.now() - t0) * 1000) / 1000;
+
+    if (!imageBase64 || validMarkIds.length === 0) {
+      return {
+        id: null,
+        reason: 'Thiếu ảnh SoM hoặc danh sách nhãn hợp lệ rỗng',
+        apiCalled: false,
+        valid: false,
+        provider: 'none',
+        prompt,
+        latencyMs: elapsed(),
+      };
+    }
+
+    // 1. Ưu tiên Pluggable Multimodal Provider (options.provider hoặc static provider) cho test offline / custom backend
+    const activeProvider = options.provider ?? this.customVisionSoMProvider;
+    if (activeProvider) {
+      try {
+        const providerRaw = await activeProvider({
+          imageBase64,
+          action,
+          targetHint,
+          markCount: validMarkIds.length,
+          prompt,
+          validMarkIds,
+        });
+        const validated = parseAndValidateSoMMarkId(providerRaw, validIdSet, validMarkIds.length);
+        const providerName =
+          providerRaw && typeof providerRaw === 'object' && providerRaw.provider
+            ? providerRaw.provider
+            : 'custom-provider';
+        return {
+          id: validated.id,
+          reason: validated.reason,
+          apiCalled: true,
+          valid: validated.valid,
+          rejectedHallucination: validated.rejectedHallucination,
+          rawReturnedId: validated.rawReturnedId,
+          provider: providerName,
+          prompt,
+          latencyMs: elapsed(),
+        };
+      } catch (err: any) {
+        return {
+          id: null,
+          reason: `Lỗi Multimodal Vision SoM provider: ${err?.message || String(err)}`,
+          apiCalled: true,
+          valid: false,
+          rejectedHallucination: false,
+          provider: 'custom-provider',
+          prompt,
+          latencyMs: elapsed(),
+        };
+      }
+    }
+
+    // 2. Gọi Gemini Multimodal REST API trực tiếp với inlineData image/png
+    const geminiKey = options.apiKey !== undefined ? options.apiKey : process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      return {
+        id: null,
+        reason: 'Chưa cấu hình GEMINI_API_KEY và không có Vision SoM provider (graceful offline fallback)',
+        apiCalled: false,
+        valid: false,
+        rejectedHallucination: false,
+        provider: 'none',
+        prompt,
+        latencyMs: elapsed(),
+      };
+    }
+
+    const geminiModel =
+      options.model ||
+      process.env.GEMINI_VISION_MODEL ||
+      process.env.GEMINI_MODEL ||
+      'gemini-flash-lite-latest';
+    const timeoutMs = options.timeoutMs ?? 15000;
+    const fetchImpl = options.fetchFn || fetch;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const resp = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: prompt },
+                {
+                  inlineData: {
+                    mimeType: 'image/png',
+                    data: imageBase64,
+                  },
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0,
+            responseMimeType: 'application/json',
+          },
+        }),
+      });
+
+      if (!resp.ok) {
+        return {
+          id: null,
+          reason: `Gemini Multimodal API trả về HTTP ${resp.status}`,
+          apiCalled: true,
+          valid: false,
+          rejectedHallucination: false,
+          provider: 'gemini-multimodal',
+          prompt,
+          latencyMs: elapsed(),
+        };
+      }
+
+      const data: any = await resp.json();
+      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+      const validated = parseAndValidateSoMMarkId(rawText, validIdSet, validMarkIds.length);
+      return {
+        id: validated.id,
+        reason: validated.reason,
+        apiCalled: true,
+        valid: validated.valid,
+        rejectedHallucination: validated.rejectedHallucination,
+        rawReturnedId: validated.rawReturnedId,
+        provider: 'gemini-multimodal',
+        prompt,
+        latencyMs: elapsed(),
+      };
+    } catch (err: any) {
+      return {
+        id: null,
+        reason: `Lỗi gọi Gemini Multimodal API: ${err?.message || String(err)}`,
+        apiCalled: true,
+        valid: false,
+        rejectedHallucination: false,
+        provider: 'gemini-multimodal',
+        prompt,
+        latencyMs: elapsed(),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Hàm tiện ích xuất trực tiếp để gọi Gemini Multimodal Vision SoM (ủy quyền qua LLMBridge.askGeminiVisionSoM).
+ */
+export async function askGeminiVisionSoM(
+  imageBase64: string,
+  action: string,
+  targetHint: string,
+  markCount: number,
+  options?: AskGeminiVisionSoMOptions
+): Promise<VisionSoMResult> {
+  return LLMBridge.askGeminiVisionSoM(imageBase64, action, targetHint, markCount, options);
 }

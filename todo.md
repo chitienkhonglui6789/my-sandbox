@@ -14,239 +14,215 @@
 - [x] **Prompt 04**: Native Dialog Interceptor (Alert, Confirm, Prompt, BeforeUnload)
 - [x] **Prompt 05**: Multi-Tab Manager & Context Switcher
 - [x] **Prompt 06**: Virtualized Scroll Engine & Floating Portal Dropdown Protocol
-- [ ] **Prompt 07**: Post-Fill Masked Input Integrity & Deadlock Watchdog Circuit Breaker
-- [ ] **Prompt 08**: XAI Decision Audit Trail Logging & Cập nhật Dashboard Web UI
-- [ ] **Prompt 09**: Real-World Stress Benchmark Suite & Validation Toàn diện
+- [x] **Prompt 07**: Post-Fill Masked Input Integrity & Deadlock Watchdog Circuit Breaker
+- [x] **Prompt 08**: XAI Decision Audit Trail Logging & Cập nhật Dashboard Web UI
+- [x] **Prompt 09**: Real-World Stress Benchmark Suite & Validation Toàn diện
+- [x] **Prompt 10**: Root-Level Element Occlusion & Spatial Hit-Testing Engine (Trụ cột 2 & 10 Mở rộng)
+- [x] **Prompt 11**: Hanging Interactive Overlays & Implicit Dismissal Protocol (Trụ cột 18)
+- [x] **Prompt 12**: Nameless SVG Icon Topology & Spatial Boundary Resolution (Trụ cột 16)
+- [x] **Prompt 13**: Adaptive Notification Oracle & Multi-Tier Toast Evasion (Trụ cột 17)
+- [x] **Prompt 14**: Dual-Stream Multimodal Vision & Set-of-Marks Routing Pipeline (Trụ cột 3 & 6 Mở rộng)
 
 ---
 
-## 🚀 CHI TIẾT TỪNG PROMPT THỰC THI
+## ✅ CÁC PROMPT ĐÃ HOÀN THÀNH (01 -> 14)
+> Toàn bộ 14 prompt cốt lõi & mở rộng đã hoàn thành 100% (144/144 test cases PASS, 0 lỗi TypeScript):
+- **Prompt 01**: Damerau-Levenshtein & Antonym Barrier (`tests/element-resolver.test.ts` - 14/14 PASS)
+- **Prompt 02**: UI Quiescence Watcher & Inflight Network (`tests/quiescence-retry.test.ts` - 5/5 PASS)
+- **Prompt 03**: Actor-Critic & Safety Margin $\Delta \ge 20\%$ (`tests/actor-critic-margin.test.ts` - 11/11 PASS)
+- **Prompt 04**: Native Dialog Interceptor (`tests/native-dialog.test.ts` - 9/9 PASS)
+- **Prompt 05**: Multi-Tab Manager & Context Switcher (`tests/multi-tab.test.ts` - 6/6 PASS)
+- **Prompt 06**: Virtual Scroll & Floating Dropdown (`tests/virtual-scroll-dropdown.test.ts` - 12/12 PASS)
+- **Prompt 07**: Masked Input & Deadlock Watchdog (`tests/masked-watchdog.test.ts` - 9/9 PASS)
+- **Prompt 08**: XAI Audit Trail & Web UI Dashboard (`tests/xai-audit-trail.test.ts` - 5/5 PASS)
+- **Prompt 09**: Real-World Stress Benchmark Suite (`tests/stress-ai-suite.test.ts` - 8/8 PASS)
+- **Prompt 10**: Root-Level Element Occlusion & Spatial Hit-Testing Engine (`tests/occlusion-hit-test.test.ts` - 15/15 PASS)
+- **Prompt 11**: Hanging Interactive Overlays & Implicit Dismissal Protocol (`tests/implicit-dismissal.test.ts` - 12/12 PASS)
+- **Prompt 12**: Nameless SVG Icon Topology & Spatial Boundary Resolution (`tests/nameless-svg.test.ts` - 19/19 PASS)
+- **Prompt 13**: Adaptive Notification Oracle & Multi-Tier Toast Evasion (`tests/notification-oracle.test.ts` - 10/10 PASS)
+- **Prompt 14**: Dual-Stream Multimodal Vision & Set-of-Marks Routing Pipeline (`tests/multimodal-vision.test.ts` - 9/9 PASS)
 
-### PROMPT 01: Damerau-Levenshtein Distance & Antonym Barrier Table
-- **Trạng thái:** `[x] Đã hoàn thành (14/14 Unit Tests Passed)`
-- **Tập tin mục tiêu:** [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [tests/element-resolver.test.ts](file:///e:/SourceCode/autotest/tests/element-resolver.test.ts)
-- **Mục tiêu:** Xử lý lỗi gõ sai ký tự (typo/transposition) và chặn tuyệt đối click nhầm các nút có ngữ nghĩa đối lập nguy hiểm.
+---
+
+## 📚 CHI TIẾT ĐẶC TẢ CÁC PROMPT MỞ RỘNG (10 -> 14 - ĐÃ HOÀN THÀNH)
+
+---
+
+### PROMPT 10: Root-Level Element Occlusion & Spatial Hit-Testing Engine
+- **Trạng thái:** `[x] Đã hoàn thành`
+- **Tập tin mục tiêu:** [src/dom-distiller.ts](file:///e:/SourceCode/autotest/src/dom-distiller.ts), [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [tests/occlusion-hit-test.test.ts](file:///e:/SourceCode/autotest/tests/occlusion-hit-test.test.ts)
+- **Mục tiêu:** Xóa bỏ hoàn toàn tình trạng click trượt do phần tử bị che khuất (Sticky Header/Footer, Backdrop, Overlays) mà không dùng JS synthetic click bypass; bảo đảm 100% sự kiện vật lý tin cậy (`isTrusted: true`).
 
 ```markdown
-### [PROMPT 01]
-Hãy cập nhật file `src/element-resolver.ts` để hiện thực hóa Trụ cột 4 (Fuzzy Intent & Damerau-Levenshtein) và Trụ cột 5 (Antonym Barrier) theo đúng tài liệu QUY_CHUAN_AI_RESOLVER.md:
+### [PROMPT 10]
+Hãy nâng cấp `src/dom-distiller.ts` và `src/runner.ts` để xử lý triệt để hiện tượng Phần tử bị che khuất (Element Occlusion) theo chuẩn Playwright Actionability và Chromium Compositor Hit-Testing:
 
-1. Triển khai thuật toán Damerau-Levenshtein distance (hỗ trợ xóa, chèn, thay thế và hoán vị 2 ký tự liền kề như "ni" <-> "in"):
-   - Tính toán khoảng cách chuẩn hóa: Sim = 1 - (distance / max(len(s1), len(s2))).
-   - Cho phép tự phục hồi (Self-Healing) khi Sim >= 0.75 (hoặc distance <= 2 với từ ngắn).
+1. Safe Viewport Band Engine (Dải cuộn an toàn):
+   - Tự động quét phát hiện các thanh cố định: Sticky Header (`H_top`), Sticky Footer (`H_bottom`), Floating Action Bar.
+   - Thiết lập dải Viewport an toàn: `[H_top + 20px, ViewportHeight - H_bottom - 20px]`.
+   - Khi cuộn đưa phần tử vào tầm nhìn, luôn căn phần tử vào chính giữa dải an toàn (`scrollIntoViewIfNeeded({ block: 'center' })`), ngăn chặn triệt để việc phần tử bị dính sát mép trên/dưới và bị header/footer nuốt mất click.
 
-2. Xây dựng bảng từ khóa đối lập (Antonym Barrier Matrix):
-   - Các cặp từ đối lập nghiêm ngặt: 
-     - ("sign in", "sign out"), ("login", "logout"), ("log in", "log out")
-     - ("delete", "save"), ("remove", "add"), ("cancel", "confirm")
-     - ("accept", "reject"), ("enable", "disable"), ("agree", "decline")
-   - Bất kể điểm Levenshtein hay Embedding cao đến đâu, nếu Target Text và Candidate thuộc hai cực đối lập của ma trận thì lập tức bị loại bỏ (Score = 0) và gắn cờ vi phạm ANTYNOM_VIOLATION.
+2. 5-Point Multi-Sampling Physical Hit-Tester:
+   - Trước khi click, thực hiện hit-test đa điểm: Tâm $(c_x, c_y)$ và 4 góc an toàn cách mép 5px:
+     - Điểm 1: Tâm $(x + w/2, y + h/2)$
+     - Điểm 2: Góc trên-trái $(x + 5, y + 5)$
+     - Điểm 3: Góc trên-phải $(x + w - 5, y + 5)$
+     - Điểm 4: Góc dưới-trái $(x + 5, y + h - 5)$
+     - Điểm 5: Góc dưới-phải $(x + w - 5, y + h - 5)$
+   - Nếu tâm bị che nhưng có ít nhất 1 góc lộ diện (không bị che bởi layer khác): Tự động dịch chuyển tọa độ click vật lý vào góc hở an toàn.
 
-3. Viết unit test kiểm chứng:
-   - "sign ni" phải map thành công vào "Sign In" (distance = 1, transposition).
-   - "Sign In" tuyệt đối không được map vào "Sign Out".
-   - "delte" phải map thành công vào "Delete".
-   - "submti" phải map thành công vào "Submit".
+3. Sutherland-Hodgman Polygon Sub-region Centroid (Trọng tâm vùng hở):
+   - Khi phần tử bị che một phần bởi Banner hoặc Sticky Bar:
+     - Tính toán phép trừ hình học giữa Bounding Box của mục tiêu và Bounding Box của vật cản.
+     - Xác định diện tích vùng con còn lộ diện (Exposed Clickable Sub-Region).
+     - Nếu diện tích lộ diện $\ge 40\%$ (đủ kích thước chạm chuẩn $24\text{px} \times 24\text{px}$), tính toán trọng tâm (Centroid) của vùng hở và điều hướng chuột click vào đó.
+     - Nếu bị che hoàn toàn ($100\%$ Occluded), chuyển sang kích hoạt Thang cứu nguy dẹp vật cản (Prompt 11 & Prompt 13).
+
+4. Viết unit & integration tests trong `tests/occlusion-hit-test.test.ts`:
+   - Test phần tử nằm dưới Sticky Header được tự động cuộn vào vùng an toàn.
+   - Test nút bị che 50% góc phải vẫn được click thành công tại góc trái hở.
+   - Test hit-test 5 điểm bắt trúng vật cản và dịch chuyển tọa độ chính xác.
 ```
 
 ---
 
-### PROMPT 02: UI Quiescence Watcher (Network Inflight & DOM Mutation)
-- **Trạng thái:** `[x] Đã hoàn thành (5/5 Unit Tests Passed)`
-- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/settlement-barrier.ts](file:///e:/SourceCode/autotest/src/settlement-barrier.ts), [tests/quiescence-retry.test.ts](file:///e:/SourceCode/autotest/tests/quiescence-retry.test.ts)
-- **Mục tiêu:** Chấm dứt tình trạng click trượt do mạng lag, SPA rendering chậm, hoặc hiệu ứng animation chưa kết thúc.
+### PROMPT 11: Hanging Interactive Overlays & Implicit Dismissal Protocol (Trụ cột 18)
+- **Trạng thái:** `[x] Đã hoàn thành`
+- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/settlement-barrier.ts](file:///e:/SourceCode/autotest/src/settlement-barrier.ts), [tests/implicit-dismissal.test.ts](file:///e:/SourceCode/autotest/tests/implicit-dismissal.test.ts)
+- **Mục tiêu:** Xóa bỏ hoàn toàn nhu cầu viết các bước thủ công "click ra ngoài khoảng trống" hoặc "click cancel trên modal". Khi người dùng chọn xong checkbox trong dropdown hoặc xem xong modal, hệ thống tự động nhận diện và dọn dẹp lớp phủ treo khi bước kế tiếp hướng tới phần tử bên ngoài.
 
 ```markdown
-### [PROMPT 02]
-Hãy cập nhật `src/runner.ts` để hiện thực hóa Trụ cột 1 (Quiescence & Network Inflight) và Trụ cột 2 (Auto-Wait & Dynamic Retry Loop) theo QUY_CHUAN_AI_RESOLVER.md:
+### [PROMPT 11]
+Hãy cập nhật `src/runner.ts` và `src/settlement-barrier.ts` để hiện thực hóa Trụ cột 18 (Lớp Phủ Tương Tác Treo & Giao Thức Giải Phóng Ngầm Định - Implicit Dismissal Protocol) theo chuẩn W3C Light Dismiss API:
 
-1. Triển khai hàm `waitForUIQuiescence(page, timeoutMs = 7000)` thay thế toàn bộ các lệnh `waitForTimeout` tĩnh:
-   - Theo dõi số lượng request mạng đang bay (Inflight Network Requests): Đợi cho đến khi Inflight = 0 duy trì liên tục trong tối thiểu 300ms.
-   - Lắng nghe DOM Mutation: Đảm bảo không có node nào được thêm/xóa/sửa thuộc tính trong 200ms cuối.
-   - Kiểm tra Spinner/Skeleton: Đợi các selector phổ biến (`[aria-busy="true"]`, `.spinner`, `.loading`, `.skeleton`, `[data-loading]`) biến mất khỏi DOM hoặc ẩn đi (`display: none` / `visibility: hidden`).
+1. Active Overlay Stack & Context-Boundary Crossing Detection:
+   - Hệ thống duy trì bộ giám sát các layer nổi đang mở: `[role="listbox"]`, `.ant-select-dropdown`, `.MuiPopover-root`, `.select__menu`, `.modal`, `[role="dialog"]`.
+   - Khi bước kịch bản tiếp theo yêu cầu thao tác trên phần tử $E_{\text{next}}$ nằm ngoài subtree của overlay đang mở:
+     - Nhận diện trạng thái "Vượt ranh giới ngữ cảnh" (Context-Boundary Crossing).
+     - Lập tức kích hoạt quy trình giải phóng ngầm định (Implicit Dismissal) trước khi tương tác với $E_{\text{next}}$.
 
-2. Vòng lặp Exponential Backoff Retry:
-   - Khi tìm kiếm element hoặc thực hiện hành động thất bại, không fail ngay mà thử lại tối đa 3 lần với khoảng chờ tăng dần: 500ms -> 1500ms -> 3000ms.
-   - Mỗi lần retry phải kích hoạt lại `waitForUIQuiescence`.
+2. W3C Light Dismiss & Auto-Escape Keyboard Trigger (Cấp 1):
+   - Tự động phát tín hiệu phím `page.keyboard.press('Escape')`.
+   - Nín thở Quiescence 150ms để kiểm tra overlay có unmount hoặc ẩn đi hay không.
+   - Bảo đảm 100% giá trị đã chọn trong checkbox list / multi-select dropdown không bị mất.
+
+3. Re-Toggle Trigger & Safe Neutral Click Calculation (Cấp 2 & 3):
+   - Nếu component custom không lắng nghe phím Escape:
+     - Cấp 2: Click lại chính nút Trigger container ban đầu đã mở dropdown để đảo trạng thái (Toggle close).
+     - Cấp 3: Tính toán tọa độ trung tính an toàn $P_{\text{neutral}}$ trên `<body>` (nằm ngoài Bounding Box của toàn bộ các phần tử tương tác, dropdown portal, sticky bar, ad banner) và dispatch click để kích hoạt hook `onClickOutside` tự nhiên.
+
+4. Modal Safe Dismiss & Antonym Guardrail (Cấp 4):
+   - Khi bị chặn bởi Modal/Dialog mà bước tiếp theo thuộc về trang cha bên dưới:
+     - Tự động tìm lối thoát an toàn theo thứ tự: Nút đóng góc trên (`[aria-label="Close"]`, icon `✕`, `.close`) $\rightarrow$ Phím `Escape` $\rightarrow$ Nút từ chối an toàn (`Hủy`, `Cancel`, `Bỏ qua`, `Đóng`) $\rightarrow$ Click lớp nền mờ ngoài modal (`maskClosable: true`).
+     - **Antonym Barrier Guardrail**: Nghiêm cấm tuyệt đối việc tự ý click vào các nút khẳng định (`Lưu`, `Xác nhận`, `OK`, `Submit`) để thoát modal.
+
+5. Viết unit & integration tests trong `tests/implicit-dismissal.test.ts`:
+   - Kịch bản Multi-Select Dropdown: Chọn 3 checkbox, bước tiếp theo điền Email ngay lập tức mà KHÔNG cần bước "click ra ngoài". Engine tự động gửi Escape đóng dropdown và điền Email thành công.
+   - Kịch bản Modal: Mở modal xem thông tin, bước tiếp theo click nút ở trang cha. Engine tự động đóng modal an toàn.
+   - Test Safe Neutral Click tính toán tọa độ trống chính xác trên trang phức tạp.
 ```
 
 ---
 
-### PROMPT 03: Kiến trúc Actor-Critic & Safety Margin ($\Delta_{\text{margin}} \ge 20\%$)
-- **Trạng thái:** `[x] Đã hoàn thành (11/11 Unit Tests Passed)`
-- **Tập tin mục tiêu:** [src/llm-bridge.ts](file:///e:/SourceCode/autotest/src/llm-bridge.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [tests/actor-critic-margin.test.ts](file:///e:/SourceCode/autotest/tests/actor-critic-margin.test.ts)
-- **Mục tiêu:** Chống ảo giác (hallucination), kiểm duyệt chéo trước khi thực thi hành động nhấp chuột.
+### PROMPT 12: Nameless SVG Icon Topology & Spatial Boundary Resolution (Trụ cột 16)
+- **Trạng thái:** `[x] Đã hoàn thành`
+- **Tập tin mục tiêu:** [src/dom-distiller.ts](file:///e:/SourceCode/autotest/src/dom-distiller.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [tests/nameless-svg.test.ts](file:///e:/SourceCode/autotest/tests/nameless-svg.test.ts)
+- **Mục tiêu:** Định danh chuẩn xác các nút Icon chỉ chứa thẻ `<svg>`, 0 innerText, 0 nhãn trợ năng (như nút thu gọn/mở sidebar, menu hamburger, icon đóng, kính lúp tìm kiếm) mà không bị điểm tương đồng văn bản = 0.
 
 ```markdown
-### [PROMPT 03]
-Hãy nâng cấp `src/llm-bridge.ts` và `src/element-resolver.ts` để hiện thực hóa Trụ cột 6 (Kiến trúc Actor-Critic) và Trụ cột 3 (Safety Margin) theo QUY_CHUAN_AI_RESOLVER.md:
+### [PROMPT 12]
+Hãy nâng cấp `src/dom-distiller.ts` và `src/element-resolver.ts` để hiện thực hóa Trụ cột 16 (Định Danh Nút Icon SVG Không Nhãn) theo chuẩn Google SVG Path Fingerprinting và Microsoft Boundary Proximity:
 
-1. Cơ chế Safety Margin (Delta Margin):
-   - Khi lọc danh sách ứng viên (candidates), tính toán: Delta = Top1_Score - Top2_Score.
-   - Nếu Delta < 0.20 (20%) hoặc Top1_Score < 0.85: Hệ thống đánh dấu trạng thái "AMBIGUOUS" và kích hoạt quy trình đa thể thức (Multimodal Resolution kèm ảnh chụp).
+1. Vector Path Geometry Normalizer & Structural Signature Bank:
+   - Chuẩn hóa tọa độ lệnh vẽ `d` trong thẻ `<svg>` về khung quy chuẩn $[0, 24] \times [0, 24]$ độc lập với `viewBox`.
+   - Xây dựng ngân hàng chữ ký hình học vector (Structural Signature Bank) cho các họ icon phổ biến:
+     - Hamburger Menu (3 vạch ngang song song: `M4 6h16`, `M4 12h16`, `M4 18h16`).
+     - Chevron-Left / Chevron-Right / Fold / Collapse (mũi tên gập thu gọn/mở rộng).
+     - Sidebar Layout Column Icon (khung chữ nhật chia cột trái).
+     - Close (dấu nhân ✕), Search (kính lúp), Settings (bánh răng).
+   - Tự động gán nhãn ngữ nghĩa ảo (`virtualLabel`) cho các phần tử khớp với ngân hàng chữ ký.
 
-2. Pipeline Actor-Critic:
-   - Bước 1 (Actor): LLM phân tích DOM + Screenshot để đề xuất phần tử mục tiêu (Selector / Index / Bounding Box) kèm lý do (Reasoning) và điểm tự tin (Confidence).
-   - Bước 2 (Critic): Trước khi Runner click, hệ thống gửi lại vị trí đề xuất cho Critic Model (hoặc Critic Prompt) với câu hỏi: "Dựa trên kịch bản yêu cầu hành động [Action] trên [TargetHint], nút được chọn tại tọa độ này có chính xác là mục tiêu không? Có nguy cơ click nhầm nút đối lập hoặc sai ngữ cảnh không?".
-   - Nếu Critic = REJECTED -> Hủy hành động, ghi nhận cảnh báo AMBIGUOUS_TARGET.
+2. Spatial Boundary Proximity Topology:
+   - Tính toán khoảng cách hình học giữa button SVG và đường ranh giới tiếp giáp của thanh Sidebar (`<aside>`, `nav`, `[role="navigation"]`).
+   - Nếu nút nằm sát biên tiếp giáp ($\le 25\text{px}$) hoặc nằm ở góc trên-trái (`x < 80px, y < 80px`), tự động gắn thẻ ngữ cảnh `Context: "Sidebar Boundary Control"`.
+
+3. ARIA State Dynamic Mapping:
+   - Khai thác thuộc tính `aria-expanded="true/false"` và `aria-controls="sidebar-id"` để khẳng định nút có vai trò đóng/mở thanh điều hướng.
+
+4. Synthetic Hover Tooltip Trap:
+   - Nếu nút vẫn rỗng nhãn, kích hoạt hover giả lập (`mouseenter`) để đọc popup tooltip (`role="tooltip"`, `title`, `data-tooltip`, `.sr-only`) sinh ra nhãn trợ năng ngầm.
+
+5. Công thức Chấm điểm 4 Trọng số:
+   $$\text{Score}_{\text{SVG}} = 0.4 \cdot S_{\text{vector}} + 0.3 \cdot S_{\text{spatial}} + 0.2 \cdot S_{\text{aria\_state}} + 0.1 \cdot S_{\text{tooltip}}$$
+   - Đạt $\text{Score} \ge 85\%$ và $\Delta_{\text{margin}} \ge 20\%$ cho phép tự động click an toàn.
+
+6. Viết unit & integration tests trong `tests/nameless-svg.test.ts`:
+   - Test nút thu gọn sidebar chỉ có SVG (0 text, 0 aria) map thành công với câu lệnh "Bấm thu gọn menu" hoặc "Đóng sidebar".
+   - Test nút hamburger menu SVG map thành công với câu lệnh "Mở menu".
+   - Test nút tìm kiếm SVG (kính lúp) map thành công với câu lệnh "Tìm kiếm".
 ```
 
 ---
 
-### PROMPT 04: Native Dialog Interceptor (Alert, Confirm, Prompt, BeforeUnload)
-- **Trạng thái:** `[x] Đã hoàn thành (9/9 Unit Tests Passed)`
-- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [tests/native-dialog.test.ts](file:///e:/SourceCode/autotest/tests/native-dialog.test.ts)
-- **Mục tiêu:** Ngăn chặn tình trạng kịch bản bị treo cứng vô thời hạn khi trình duyệt bật cửa sổ hộp thoại hệ điều hành.
+### PROMPT 13: Adaptive Notification Oracle & Multi-Tier Toast Evasion (Trụ cột 17)
+- **Trạng thái:** `[x] Đã hoàn thành`
+- **Tập tin mục tiêu:** [src/settlement-barrier.ts](file:///e:/SourceCode/autotest/src/settlement-barrier.ts), [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [tests/notification-oracle.test.ts](file:///e:/SourceCode/autotest/tests/notification-oracle.test.ts)
+- **Mục tiêu:** Xóa bỏ triệt để việc bắt dính thông báo sai (False Positives trên thông báo thành công / cảnh báo lành tính) và tự động né tránh các thông báo nổi che lấp nút bấm.
 
 ```markdown
-### [PROMPT 04]
-Hãy cập nhật `src/runner.ts` để hiện thực hóa Trụ cột 7 (Xử lý Native Browser Dialogs) theo QUY_CHUAN_AI_RESOLVER.md:
+### [PROMPT 13]
+Hãy cập nhật `src/settlement-barrier.ts` và `src/runner.ts` để hiện thực hóa Trụ cột 17 (Bộ Lọc Thông Báo Thích Ứng & Vượt Vật Cản Toast) theo chuẩn IEEE 29119:
 
-1. Thiết lập lắng nghe toàn cục `page.on('dialog', async dialog => ...)` ngay khi khởi tạo trang:
-   - Tự động ghi lại loại dialog (`alert`, `confirm`, `prompt`, `beforeunload`), nội dung thông điệp (`dialog.message()`), và giá trị mặc định.
-   - Chiến lược giải phóng:
-     - `alert`: Tự động gọi `dialog.accept()` và lưu nội dung vào log execution.
-     - `confirm`: Nếu bước kịch bản tiếp theo mang tính khẳng định (ví dụ: "Xác nhận", "Đồng ý", "OK") -> `dialog.accept()`; nếu là "Hủy" hoặc không nhắc tới -> gọi `dialog.accept()` mặc định để giải phóng luồng, đồng thời đính kèm cảnh báo vào báo cáo.
-     - `prompt`: Tự động điền giá trị từ kịch bản hoặc chuỗi rỗng rồi `accept()`.
-     - `beforeunload`: Tự động `dialog.accept()` để không cản trở quá trình điều hướng trang.
+1. IEEE 29119 Severity Classification Taxonomy:
+   - Tự động phân cấp thông báo xuất hiện trên màn hình thành 4 mức độ:
+     - `SUCCESS` (Xanh lục `#52c41a`, `.toast-success`, checkmark ✓): Khẳng định hành động trước thành công $\rightarrow$ Ghi nhận bằng chứng PASS, cấm đánh trượt.
+     - `INFO` (Xanh dương `#1890ff`, `.toast-info`, mẹo/tips): Bỏ qua.
+     - `WARNING` (Màu vàng `#faad14`, `.toast-warning`, khuyến cáo): Ghi log cảnh báo màu vàng, CẤM ĐÁNH TRƯỢT kịch bản.
+     - `ERROR` (Màu đỏ `#ff4d4f`, `.toast-error`, HTTP 500, crash): Kích hoạt `PRODUCT_DEFECT` (trừ khi kịch bản đang test ca phủ định).
 
-2. Cung cấp API truy xuất lịch sử dialog đã bắt được trong phiên test để phục vụ kiểm tra Assertion (ví dụ: kiểm tra alert hiển thị đúng câu thông báo).
+2. Expected vs Unexpected Notification Oracle:
+   - Đối soát thông báo với bước kiểm thử hiện tại: Nếu kịch bản đang kiểm tra câu báo lỗi (ví dụ: `Kiểm tra chữ "Mật khẩu không đúng"`), sự xuất hiện của thông báo đỏ là ĐẠT KỲ VỌNG (`EXPECTED: PASS`).
+
+3. 4-Tier Toast Evasion Ladder (Thang cứu nguy khi Toast che khuất nút bấm):
+   - Cấp 1 (Auto-Dismiss): Tự động tìm và click nút đóng `✕` trên toast hoặc gửi phím `Escape`.
+   - Cấp 2 (Spatial Evasion): Quét vùng diện tích hở $\ge 40\%$ của mục tiêu ngoài biên Toast để click lệch tâm an toàn.
+   - Cấp 3 (Smart TTL Drain): Nín thở chờ thời gian sống của Toast tiêu biến tự nhiên (thường 2.0s - 3.5s) rồi thao tác trên màn hình sạch.
+   - Cấp 4 (Pointer-Events Isolation): Áp dụng `pointer-events: none` tạm thời trên container toast để click xuyên thấu trong test harness.
+
+4. Viết unit & integration tests trong `tests/notification-oracle.test.ts`:
+   - Test thông báo "Cập nhật thành công" (Success) không bị báo lỗi.
+   - Test cảnh báo "Mật khẩu yếu" (Warning) chỉ ghi warning log, kịch bản vẫn tiếp tục chạy.
+   - Test nút Submit bị Toast nổi che mất: Hệ thống tự động đóng toast hoặc click vùng hở thành công.
 ```
 
 ---
 
-### PROMPT 05: Multi-Tab Manager & Context Switcher
-- **Trạng thái:** `[x] Đã hoàn thành (18/11/2026)`
-- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts)
-- **Bộ test:** [tests/multi-tab.test.ts](file:///e:/SourceCode/autotest/tests/multi-tab.test.ts) (6/6 tests PASS)
-- **Mục tiêu:** Tự động điều hướng và đồng bộ hóa ngữ cảnh khi click link mở tab mới (`target="_blank"`) hoặc popup đăng nhập SSO.
+### PROMPT 14: Dual-Stream Multimodal Vision & Set-of-Marks Routing Pipeline
+- **Trạng thái:** `[x] Đã hoàn thành`
+- **Tập tin mục tiêu:** [src/llm-bridge.ts](file:///e:/SourceCode/autotest/src/llm-bridge.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [tests/multimodal-vision.test.ts](file:///e:/SourceCode/autotest/tests/multimodal-vision.test.ts)
+- **Mục tiêu:** Tích hợp thị giác máy tính vào xử lý các giao diện Canvas/WebGL, biểu đồ, icon phức tạp mà không tốn chi phí và không bị ảo giác lệch tọa độ pixel.
 
 ```markdown
-### [PROMPT 05]
-Hãy cập nhật `src/runner.ts` để hiện thực hóa Trụ cột 8 (Điều phối Multi-Tab & Multi-Window) theo QUY_CHUAN_AI_RESOLVER.md:
+### [PROMPT 14]
+Hãy nâng cấp `src/llm-bridge.ts`, `src/element-resolver.ts` và `src/runner.ts` để hiện thực hóa Trụ cột 3 & 6 Mở rộng (Kiến trúc Thị giác Đa thể thức Dual-Stream & Kỹ thuật Set-of-Marks):
 
-1. Lắng nghe sự kiện tab mới ở cấp độ Browser Context:
-   - `context.on('page', async newPage => ...)`: Khi một tab hoặc cửa sổ mới xuất hiện (do click link có `target="_blank"`, `window.open`, hoặc popup OAuth/Payment):
-     - Tự động đợi tab mới sẵn sàng (`newPage.waitForLoadState('domcontentloaded')`).
-     - Tự động chuyển con trỏ hoạt động chính (`activePage`) sang tab mới.
-     - Đưa thông báo vào log: `[TAB SWITCH] Chuyển ngữ cảnh sang Tab mới: ${await newPage.title()} (${newPage.url()})`.
+1. Set-of-Marks (SoM) Visual Indexing:
+   - Chụp ảnh Viewport bằng Playwright.
+   - Sử dụng canvas nội bộ để vẽ các badge số màu sắc nổi bật `[1]`, `[2]`, `[3]`... lên chính giữa Bounding Box của từng ứng viên tương tác.
+   - Gửi ảnh đã gắn nhãn SoM cho Gemini Multimodal API kèm câu hỏi: "Để thực hiện hành động [Action] trên mục tiêu [TargetHint], hãy chọn ID số mấy?".
+   - AI chỉ cần trả về con số ID (ví dụ: `14`), hệ thống lấy trực tiếp Bounding Box hình học gốc của ứng viên đó để click $\rightarrow$ Triệt tiêu 100% ảo giác đoán mò tọa độ pixel.
 
-2. Quản lý vòng đời tab:
-   - Cho phép runner đóng tab con và quay về tab gốc (`parentPage`) khi luồng phụ kết thúc.
-   - Bảo đảm khi chụp màn hình và phân tích element luôn thao tác trên tab đang active.
-```
+2. Tiered 3-Level Routing Pipeline (Tối ưu Chi phí & Độ trễ):
+   - Cấp L1 (0ms): DOM Heuristic Fast-Path (Score $\ge 95\%$, Delta $\ge 30\%$) $\rightarrow$ Xử lý 80% trường hợp với chi phí $0, độ trễ < 2ms.
+   - Cấp L2 (<5ms): Damerau-Levenshtein Typo Healing & Antonym Barrier $\rightarrow$ Xử lý 15% trường hợp với chi phí $0, độ trễ < 8ms.
+   - Cấp L3 (Vision SoM Fallback): Chỉ kích hoạt khi:
+     - Giao diện là thẻ `<canvas>` hoặc WebGL (0 phần tử DOM con).
+     - Nút icon thuần túy không có text và L1/L2 không đạt ngưỡng tin cậy.
+     - Vùng mờ tranh chấp ($\Delta_{\text{margin}} < 20\%$).
+     $\rightarrow$ Chỉ chiếm 5% trường hợp, tiết kiệm 95% chi phí API và bảo toàn tốc độ chạy test suite.
 
----
-
-### PROMPT 06: Virtualized Scroll Engine & Floating Portal Dropdown
-- **Trạng thái:** `[x] Đã hoàn thành (18/11/2026 - 12/12 Unit & Integration Tests Passed)`
-- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts), [src/dom-distiller.ts](file:///e:/SourceCode/autotest/src/dom-distiller.ts)
-- **Bộ test:** [tests/virtual-scroll-dropdown.test.ts](file:///e:/SourceCode/autotest/tests/virtual-scroll-dropdown.test.ts) (12/12 tests PASS)
-- **Mục tiêu:** Xử lý danh sách vô tận (Infinite Scroll / Virtual DOM) và các component Dropdown hiện đại (React-Select, Ant Design, Material-UI).
-
-```markdown
-### [PROMPT 06]
-Hãy nâng cấp `src/runner.ts` và `src/element-resolver.ts` để hiện thực hóa Trụ cột 10 (Virtual List Incremental Scroll) và Trụ cột 11 (Custom Portal Dropdown Protocol) theo QUY_CHUAN_AI_RESOLVER.md:
-
-1. Virtualized List Incremental Scroll:
-   - Khi phần tử mục tiêu không tìm thấy trong viewport hiện tại:
-     - Không fail ngay; thực hiện cuộn phân đoạn (Step Scroll): Cuộn xuống 350px mỗi lần (tối đa 5 lần = 1750px).
-     - Sau mỗi lần cuộn, đợi 200ms để DOM ảo mount node mới rồi quét lại danh sách candidates.
-     - Nếu phát hiện thấy element xuất hiện, gọi `element.scrollIntoViewIfNeeded()` trước khi tương tác.
-
-2. Custom Select / Floating Dropdown Protocol (React-Select, Antd, MUI):
-   - Nhận diện khi một select không phải là `<select>` thuần mà là Custom Trigger div/button:
-     - Pha 1: Click vào container trigger để mở popup menu.
-     - Pha 2: Chờ menu overlay xuất hiện tại cuối body (`body > [role="listbox"]`, `body > .ant-select-dropdown`, `.MuiAutocomplete-popper`).
-     - Pha 3: Tìm option bên trong overlay portal theo text cần chọn và click.
-```
-
----
-
-### PROMPT 07: Masked Input Integrity & Deadlock Watchdog Circuit Breaker
-- **Trạng thái:** `[ ] Chưa thực hiện`
-- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts)
-- **Mục tiêu:** Đảm bảo nhập đúng dữ liệu vào các ô định dạng đặc biệt (SĐT, tiền tệ, ngày tháng) và tự động ngắt mạch khi giao diện bị kẹt vòng lặp vô tận.
-
-```markdown
-### [PROMPT 07]
-Hãy cập nhật `src/runner.ts` để hiện thực hóa Trụ cột 12 (Masked Input Post-Fill Verification) và Trụ cột 14 (Deadlock Watchdog) theo QUY_CHUAN_AI_RESOLVER.md:
-
-1. Post-Fill Masked Input Integrity Verification:
-   - Sau khi thực hiện action `FILL` (ví dụ: số điện thoại, thẻ tín dụng, ngày sinh):
-     - Đọc lại thuộc tính `value` thực tế của input trên trình duyệt.
-     - Chuẩn hóa loại bỏ các ký tự định dạng tự sinh (dấu gạch ngang, khoảng trắng, dấu ngoặc).
-     - Nếu giá trị thực tế không chứa đủ chuỗi số cần nhập (do thư viện mask nuốt ký tự khi dùng `element.fill()`):
-       - Tự động chuyển sang cơ chế fallback: Focus vào ô, nhấn Ctrl+A, Backspace, sau đó dùng `page.keyboard.pressSequentially(value, { delay: 60 })` để gõ từng phím như người thật.
-
-2. Deadlock Watchdog Circuit Breaker (Bộ ngắt mạch chống treo):
-   - Sau mỗi bước kiểm thử, tính mã hash SHA-256 tóm tắt của DOM cây (hoặc URL + Text content chính).
-   - Nếu trong 3 chu kỳ thao tác liên tiếp, mã hash hoàn toàn không thay đổi và hành động thất bại liên tục:
-     - Kích hoạt ngắt mạch khẩn cấp (CIRCUIT_BREAKER_TRIGGERED).
-     - Chụp ảnh màn hình, lưu log, và kích hoạt `LLMBridge.diagnoseFailureWithAI` (Forensic Autopsy) để chẩn đoán nguyên nhân UI bị kẹt thay vì tiếp tục chạy vô nghĩa.
-```
-
----
-
-### PROMPT 08: XAI Decision Audit Trail Logging & Cập nhật Dashboard Web UI
-- **Trạng thái:** `[ ] Chưa thực hiện`
-- **Tập tin mục tiêu:** [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/ui-server.ts](file:///e:/SourceCode/autotest/src/ui-server.ts)
-- **Mục tiêu:** Minh bạch hóa toàn bộ chuỗi quyết định của AI, cho phép kỹ sư xem trực quan lý do AI chọn element trên giao diện Web UI.
-
-```markdown
-### [PROMPT 08]
-Hãy cập nhật `src/runner.ts` và `src/ui-server.ts` để hiện thực hóa Trụ cột 15 (Explainable AI - XAI Audit Trail) theo QUY_CHUAN_AI_RESOLVER.md:
-
-1. Cấu trúc hóa Decision Audit Trail trong `output/report.json`:
-   - Bổ sung trường `aiAuditTrail` vào từng step trong kết quả chạy:
-     ```json
-     {
-       "stepNumber": 3,
-       "action": "CLICK",
-       "targetHint": "sign ni",
-       "decision": {
-         "chosenElement": "button#login-btn",
-         "healedIntent": "Sign In",
-         "damerauDistance": 1,
-         "confidence": 0.94,
-         "deltaMargin": 0.35,
-         "criticVerdict": "APPROVED",
-         "reasoning": "Phần tử chứa nhãn 'Sign In' khớp với 'sign ni' sau khi hoán vị ký tự; không vi phạm Antonym Barrier."
-       },
-       "quiescenceWaitMs": 340,
-       "screenshotPath": "screenshots/step_3_pass.png"
-     }
-     ```
-
-2. Nâng cấp Web UI Dashboard (`src/ui-server.ts`):
-   - Hiển thị huy hiệu (Badge) "AI Healed" bên cạnh các bước được AI tự phục hồi lỗi chính tả.
-   - Khi nhấp vào một bước, hiển thị modal chi tiết gồm:
-     - Ảnh chụp màn hình kèm Bounding Box khoanh vùng phần tử.
-     - Chuỗi suy luận XAI (Reasoning, Damerau distance, Safety Margin).
-     - Báo cáo mổ tử thi AI (Forensic Autopsy) nếu bước đó thất bại.
-```
-
----
-
-### PROMPT 09: Real-World Stress Benchmark Suite & Validation Toàn diện
-- **Trạng thái:** `[ ] Chưa thực hiện`
-- **Tập tin mục tiêu:** `tests/stress-ai-suite.json` (tạo mới), `package.json`
-- **Mục tiêu:** Tạo bộ kiểm thử nghiệm thu thực tế với các bẫy khó nhất để đo lường độ chính xác và tính tự phục hồi của hệ thống.
-
-```markdown
-### [PROMPT 09]
-Hãy tạo kịch bản kiểm thử nghiệm thu `tests/stress-ai-suite.json` và script chạy benchmark để xác thực toàn diện 15 trụ cột theo QUY_CHUAN_AI_RESOLVER.md:
-
-1. Xây dựng kịch bản với đầy đủ các bài toán hóc búa:
-   - Bài test 1: Bẫy chính tả & Hoán vị ký tự (`sign ni`, `submti`, `usernmae`).
-   - Bài test 2: Bẫy Antonym Barrier (Giao diện có 2 nút cạnh nhau: `Delete Account` và `Save Draft`, kịch bản yêu cầu bấm lưu; đảm bảo AI không bao giờ click nút Delete).
-   - Bài test 3: Bẫy mạng chậm (Trang web có spinner loading dữ liệu mất 3 giây, kiểm chứng Quiescence Watcher).
-   - Bài test 4: Bẫy Masked Input (Điền số điện thoại định dạng `(090) 123-4567`).
-   - Bài test 5: Bẫy Native Dialog (Trang web bắn `window.confirm("Bạn có chắc chắn?")`, Runner tự động xử lý).
-   - Bài test 6: Bẫy Virtualized List (Tìm kiếm và click một mục nằm ở vị trí cuộn sâu).
-
-2. Thực thi benchmark và xuất báo cáo nghiệm thu:
-   - Chạy toàn bộ suite bằng lệnh CLI.
-   - Xuất bảng thống kê: Số bước thực thi, số bước tự phục hồi (Self-Healed), tỷ lệ False Positive (phải = 0%), thời gian trung bình mỗi step.
-   - Xác nhận hệ thống đạt 100% tiêu chuẩn theo QUY_CHUAN_AI_RESOLVER.md.
+3. Viết unit & integration tests trong `tests/multimodal-vision.test.ts`:
+   - Test Set-of-Marks generator vẽ nhãn ID chính xác trên ảnh.
+   - Test fallback kích hoạt Vision SoM khi gặp phần tử Canvas/WebGL.
+   - Test định tuyến L1/L2/L3 chuyển tầng chính xác theo điều kiện ngưỡng.
 ```

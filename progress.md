@@ -1,6 +1,6 @@
 # TỔNG QUAN TIẾN ĐỘ DỰ ÁN (PROJECT PROGRESS & DEVELOPER HANDOVER)
 *Dự án: Enterprise Zero-Selector Web AutoTest Engine*  
-*Cập nhật lần cuối: 17/11/2026*
+*Cập nhật lần cuối: 19/11/2026*
 
 ---
 
@@ -34,15 +34,20 @@ autotest/
 ├── output/                    # Thư mục chứa trace_dataset.json và ảnh chụp kết quả
 ├── src/
 │   ├── types.ts               # Định nghĩa kiểu dữ liệu chuẩn (ActionType, AtomicAction, DOMCandidate, StepLog...)
-│   ├── dom-distiller.ts       # Bộ chưng cất DOM (xuyên Iframe, Shadow DOM, Hit-test 3 điểm, nhãn không gian)
-│   ├── settlement-barrier.ts  # Cơ chế nín thở thông minh (MutationObserver + Network idle, lọc sạch Tracker/Ads)
-│   ├── element-resolver.ts    # Bộ giải quyết phần tử (Heuristic Fast-Path + Trace Cache + LLM Fallback)
+│   ├── dom-distiller.ts       # Bộ chưng cất DOM (Iframe, Shadow DOM, Hit-test 5 điểm, Occlusion & Nameless SVG)
+│   ├── occlusion-engine.ts    # Engine xử lý che khuất gốc (Safe Viewport Band, 5-Point Hit-Test, Sutherland-Hodgman)
+│   ├── implicit-dismissal.ts  # Giao thức giải phóng lớp phủ treo 4 tầng (W3C Light Dismiss, Neutral Click, Antonym Guardrail)
+│   ├── svg-icon-topology.ts   # Định danh nút Icon SVG không nhãn (Path [0,24] Normalizer, Signature Bank, Boundary Proximity)
+│   ├── notification-oracle.ts # Bộ lọc thông báo IEEE 29119 (4 mức độ Severity) & Thang né tránh Toast 4 tầng
+│   ├── vision-som.ts          # Đường ống định tuyến thị giác Dual-Stream L1/L2/L3 & Set-of-Marks (SoM) Canvas
+│   ├── settlement-barrier.ts  # Cơ chế nín thở thông minh (MutationObserver + Network idle + Implicit Dismissal + Toast Evasion)
+│   ├── element-resolver.ts    # Bộ giải quyết phần tử (Heuristic Fast-Path + SVG Topology + Vision SoM L1/L2/L3 + Trace Cache)
 │   ├── step-parser.ts         # Bộ phân tích ngôn ngữ tự nhiên tiếng Việt ra AtomicAction
-│   ├── runner.ts              # Engine điều phối Playwright, chụp ảnh bằng chứng, chống click trượt
+│   ├── runner.ts              # Engine điều phối Playwright (Safe Band Click, Implicit Dismissal, Toast Oracle, Vision SoM)
 │   ├── ui-server.ts           # Web Server zero-dependency phục vụ giao diện tại port 5000
 │   ├── cli.ts                 # Giao diện dòng lệnh (--all, --file, --case, --url)
 │   ├── demo-server.ts         # Mock Server nội bộ giả lập 4 bẫy test (Wrong pass, Disabled button, Overlays...)
-│   ├── llm-bridge.ts          # Cầu nối AI 4 tầng (AGY CLI, Gemini API, Ollama, N-gram)
+│   ├── llm-bridge.ts          # Cầu nối AI 4 tầng (AGY CLI, Gemini Multimodal Vision SoM API, Ollama, N-gram)
 │   └── run-100.ts             # Bộ chạy nghiệm thu hàng loạt kịch bản
 ```
 
@@ -50,179 +55,41 @@ autotest/
 
 | File | Vai trò kỹ thuật chính |
 | :--- | :--- |
-| **`types.ts`** | Chứa data contracts: 20 `ActionType`, `AtomicAction`, `DOMCandidate`, `StepLog`, `TestRunResult`. |
-| **`dom-distiller.ts`** | Quét toàn bộ DOM trên màn hình, đâm xuyên qua iFrame, Open Shadow DOM, gom thẻ bài viết/sản phẩm (`cardSelectors`), tự tiêm helper `__name` chống crash esbuild. |
-| **`settlement-barrier.ts`**| Đợi DOM ổn định sau mỗi thao tác. Bỏ qua các request polling vô tận (Google Analytics, TikTok Pixel, Sentry...). |
-| **`element-resolver.ts`** | Tính điểm tương đồng Jaccard giữa câu lệnh và DOM. Điểm >= 75 chấp nhận ngay (0ms). Dưới 75 mới gọi tầng AI tự chữa lành. Lưu vết vào `trace_dataset.json`. |
+| **`types.ts`** | Chứa data contracts: 20 `ActionType`, `AtomicAction`, `DOMCandidate`, `StepLog`, `TestRunResult` và siêu dữ liệu Occlusion/Dismissal/SVG/Toast/SoM. |
+| **`dom-distiller.ts`** | Đã nâng cấp: Quét toàn bộ DOM (iFrame, Open Shadow DOM), gắn thông tin Safe Viewport Band / 5-Point Hit-Test (`occlusion-engine.ts`) và trích xuất ứng viên Nameless SVG (`svg-icon-topology.ts`). |
+| **`occlusion-engine.ts`** | Xử lý triệt để phần tử bị che khuất (Prompt 10): Safe Viewport Band `[H_top+20, VH-H_bottom-20]`, Hit-Tester 5 điểm, Sutherland-Hodgman Polygon Centroid ($\ge 40\%$, $\ge 24\times 24\text{px}$) và click vật lý `isTrusted: true`. |
+| **`implicit-dismissal.ts`** | Giao thức giải phóng lớp phủ tương tác treo (Prompt 11 - Trụ cột 18): ActiveOverlayTracker, Context-Boundary Crossing, W3C Light Dismiss (`Escape`), Re-Toggle Trigger, Safe Neutral Click & Modal Tier 4 với Antonym Barrier Guardrail. |
+| **`svg-icon-topology.ts`** | Định danh nút Icon SVG không nhãn (Prompt 12 - Trụ cột 16): Chuẩn hóa vector `[0,24]x[0,24]`, Structural Signature Bank, Spatial Boundary Proximity ($\le 25\text{px}$), ARIA state, Hover Tooltip Trap và công thức 4 trọng số. |
+| **`notification-oracle.ts`** | Bộ lọc thông báo thích ứng & né tránh Toast (Prompt 13 - Trụ cột 17): Phân loại IEEE 29119 (`SUCCESS`/`INFO`/`WARNING`/`ERROR`), Expected vs Unexpected Oracle và thang cứu nguy Toast 4 tầng. |
+| **`vision-som.ts`** | Kiến trúc Dual-Stream Vision & Set-of-Marks (Prompt 14): Vẽ badge `[1],[2]...` qua canvas cô lập không làm bẩn DOM, định tuyến L1/L2/L3 tiết kiệm 95% chi phí API và chống ảo giác tọa độ. |
+| **`settlement-barrier.ts`**| Đã nâng cấp: Đợi DOM/Network tĩnh (lọc Tracker/Ads), tích hợp Implicit Dismissal Protocol (Prompt 11) và Adaptive Notification Oracle / Toast Evasion (Prompt 13). |
+| **`element-resolver.ts`** | Đã nâng cấp: Kết hợp Heuristic Fast-Path, Damerau-Levenshtein, Antonym Barrier, Nameless SVG Topology (Prompt 12) và Dual-Stream Vision SoM L1/L2/L3 Routing (Prompt 14). |
+| **`llm-bridge.ts`** | Đã nâng cấp: Cầu nối AI đa tầng, bổ sung `askGeminiVisionSoM` cho Gemini Multimodal API kèm chống ảo giác Mark ID và provider giả lập offline. |
 | **`step-parser.ts`** | Chuyển đổi câu lệnh tiếng Việt thành các hành động nguyên tử (AtomicAction). |
-| **`runner.ts`** | Khởi chạy Chromium chế độ Stealth (chống chặn bot), thực thi thao tác, vẽ khung đỏ/xanh lên ảnh chụp bằng chứng. |
+| **`runner.ts`** | Đã nâng cấp: Điều phối Playwright vật lý tích hợp trọn bộ Prompt 10–14 (Safe Band Click, Implicit Dismissal trước thao tác, Adaptive Toast Oracle, Vision SoM fallback & XAI Audit). |
 | **`ui-server.ts`** | HTTP Server Node.js (cổng 5000), cung cấp API `/api/run`, phục vụ file ảnh `/output/:name` và giao diện Web SPA. |
 
 ---
 
-## 3. CÁC CÔNG VIỆC QUAN TRỌNG ĐÃ HOÀN THÀNH
+## 3. TÓM TẮT TIẾN ĐỘ ĐÃ HOÀN THÀNH (PROMPT 01 -> 14)
+> Toàn bộ 14 Prompt cốt lõi & mở rộng đã nghiệm thu 100% (144/144 test cases PASS, 0 lỗi TypeScript):
 
-1. **Khắc phục triệt để lỗi crash DOM trong iFrame**:
-   - Vấn đề: `tsx/esbuild` khi đóng gói hàm thường tiêm helper `__name`. Khi truyền hàm vào `frame.evaluate()`, trình duyệt báo lỗi `ReferenceError: __name is not defined`, làm mất sạch phần tử DOM trên trang.
-   - Giải pháp: Tự động tiêm `var __name = globalThis.__name = window.__name = ...` vào mọi frame trước khi đánh giá DOM trong `dom-distiller.ts`.
-2. **Mở rộng nhận diện danh sách bài viết báo chí thực tế**:
-   - Bổ sung `article`, `.item-news`, `.title-news`, `.news-item`, `.story`, `.dt-news__item` và tự động sắp xếp theo tọa độ vật lý từ trên xuống dưới.
-3. **Chuẩn hóa TypeScript 100%**:
-   - Cập nhật toàn bộ 20 `ActionType` và các trường tương ứng (`scrollDirection`, `scrollAmount`, `keyName`, `waitMs`, `expectedUrlPart`, `filePath`...) trong `src/types.ts`.
-   - Kết quả: `tsc --noEmit` hoàn tất với **0 lỗi**.
-4. **Kiểm nghiệm thực tế trên các trang web lớn**:
-   - **VnExpress.net**: Đạt 4/4 bước (Kiểm tra chữ -> Cuộn 600px -> Bấm tin tức đầu tiên -> Kiểm tra URL).
-   - **DanTri.com.vn**: Đạt 4/4 bước (Kiểm tra chữ -> Cuộn 600px -> Bấm Kinh doanh -> Kiểm tra URL).
-   - **GearVN.com**: Đạt 4/4 bước (Tìm kiếm chuột -> Cuộn 600px -> Bấm sản phẩm đầu -> Kiểm tra URL).
-   - **GitHub.com**: Đạt 4/4 bước (Kiểm tra chữ -> Cuộn 500px -> Bấm Pricing -> Kiểm tra URL).
-   - **SauceDemo.com**: Đạt 11/11 bước (Đăng nhập -> Mua hàng -> Điền thông tin -> Hoàn tất).
-   - **4 Trap Scenarios cục bộ**: Bắt đúng 100% các bẫy nút bị khóa (`ELEMENT_DISABLED`), sai mật khẩu (`ASSERTION_MISMATCH`).
-5. **Hỗ trợ nạp kịch bản chuẩn hóa qua file JSON (theo QUY_CHUAN_KICH_BAN.md)**:
-   - Hỗ trợ trực tiếp cờ `--file <ten_file.json>` trong `src/cli.ts` và tự động phân luồng.
-   - Tương thích 2 định dạng chuẩn:
-     - **Định dạng DSL mảng chuỗi (`steps: string[]`)**: Các bước đánh số `(1) Điền "..." vào ô "..."`.
-     - **Định dạng AST mảng đối tượng (`steps: object[]` / `actions: AtomicAction[]`)**: Chứa trực tiếp `type`, `targetHint`, `value`, `itemIndex`, `expectedText`...
-   - Khắc phục triệt để logic phân tích `FILL` trong `src/step-parser.ts` để nhận diện chuẩn xác cú pháp `Điền "[giá_trị]" vào ô "[tên_ô]"`.
-   - **Nghiệm thu thực tế**: Kịch bản E-commerce SauceDemo 18 bước (vượt yêu cầu 15 bước) chạy hoàn tất 18/18 bước (100% PASSED) với bằng chứng ảnh `output/canonical_json_pass_step_18.png` chỉ trong 6.6s.
-6. **Kiểm thử nghiệm thu luồng E-commerce thực tế đúng 15 bước (End-to-End)**:
-   - File thực thi: [kich_ban_real_15_buoc.json](file:///e:/SourceCode/autotest/kich_ban_real_15_buoc.json).
-   - Kết quả: **15/15 bước PASSED (100%)**, thời gian 13.5s, đáp ứng toàn diện 4 tầng Oracle theo [QUY_CHUAN_DANH_GIA.md](file:///e:/SourceCode/autotest/QUY_CHUAN_DANH_GIA.md).
-   - Bằng chứng ảnh chụp màn hình: [output/kich_ban_real_15_buoc_pass_step_15.png](file:///e:/SourceCode/autotest/output/kich_ban_real_15_buoc_pass_step_15.png).
-7. **Tích hợp thành công Trí tuệ Nhân tạo Đa phương thức (AI-First Multimodal & Forensic Autopsy)**:
-   - Kết nối Google Gemini API thông qua `.env` và module [src/llm-bridge.ts](file:///e:/SourceCode/autotest/src/llm-bridge.ts).
-   - Kích hoạt **AI Semantic Oracle**: Đối soát ngữ nghĩa bằng mắt thần Multimodal thay vì so khớp chuỗi mù quáng.
-   - Kích hoạt **AI Forensic Autopsy**: Tự động giải phẫu hiện trường khi kịch bản gãy, phân loại chuẩn `PRODUCT_DEFECT`, `TEST_DEFECT`, `INFRA_DEFECT` và xuất khuyến nghị hành động cho Dev/QA.
-   - Đã nghiệm thu thực tế:
-     - Kịch bản 15 bước E-commerce AI-First: PASSED 15/15 bước.
-     - Kịch bản Bẫy nút Disabled: AI chẩn đoán chính xác do chọn màu Đen hết hàng.
-     - Kịch bản Bẫy Sai mật khẩu: AI đọc hiểu thông báo lỗi trên màn hình và đề xuất cập nhật DB.
-8. **Triển khai Trụ cột 4 (Damerau-Levenshtein Distance) & Trụ cột 5 (Antonym Barrier Matrix)**:
-   - File triển khai: [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [tests/element-resolver.test.ts](file:///e:/SourceCode/autotest/tests/element-resolver.test.ts).
-   - Thuật toán Damerau-Levenshtein hỗ trợ 4 phép biến đổi (Xóa, Chèn, Thay thế, Hoán vị 2 ký tự liền kề), tính khoảng cách chuẩn hóa $\text{Sim} = 1 - (\text{dist} / \max(\text{len}_1, \text{len}_2))$, tự phục hồi Self-Healing khi $\text{Sim} \ge 0.75$.
-   - Bảng ma trận từ đối lập nghiêm ngặt (Antonym Barrier Matrix) cho cả tiếng Anh và tiếng Việt: ngăn chặn tuyệt đối bấm nhầm các nút nguy hiểm (`Sign In` vs `Sign Out`, `Delete` vs `Save`, `Remove` vs `Add`, `Cancel` vs `Confirm`, `Accept` vs `Reject`, `Enable` vs `Disable`, `Agree` vs `Decline`).
-   - Tích hợp vòng phản biện Actor-Critic Guardrail: tự động phủ quyết (Veto) đề xuất nếu vi phạm Antonym Barrier.
-   - **Nghiệm thu 14/14 Unit Tests PASSED 100%**:
-     - `sign ni` -> `Sign In` thành công ($d = 1$, transposition).
-     - `Sign In` và `sign ni` bị chặn tuyệt đối không map vào `Sign Out` (`ANTYNOM_VIOLATION`).
-     - `delte` -> `Delete` thành công ($d = 1$).
-     - `submti` -> `Submit` thành công ($d = 1$).
-     - `delte` bị chặn tuyệt đối không map vào `Save`.
-   - Toàn bộ 4 bài test bẫy hệ thống (`npm run test`) tiếp tục đạt 100% kết quả chuẩn xác.
-9. **Triển khai Trụ cột 1 (Quiescence & Network Inflight) & Trụ cột 2 (Auto-Wait & Dynamic Retry Loop)**:
-   - File triển khai: [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/settlement-barrier.ts](file:///e:/SourceCode/autotest/src/settlement-barrier.ts), [tests/quiescence-retry.test.ts](file:///e:/SourceCode/autotest/tests/quiescence-retry.test.ts).
-   - **Xóa bỏ triệt để mọi lệnh `waitForTimeout` tĩnh** trong toàn bộ mã nguồn `src/`.
-   - **Hiện thực hóa hàm `waitForUIQuiescence(page, timeoutMs = 7000)`** kiểm soát 3 chỉ số sinh tồn của ứng dụng:
-     1. *Network Inflight Requests*: Đợi cho đến khi số lượng request mạng đang bay bằng 0 duy trì liên tục trong tối thiểu 300ms.
-     2. *DOM Mutation*: Lắng nghe mọi biến đổi thêm, xóa, sửa thuộc tính (`attributes: true`) và đảm bảo cây DOM hoàn toàn tĩnh trong 200ms cuối.
-     3. *Spinner / Skeleton*: Tự động phát hiện và đợi các loader phổ biến (`[aria-busy="true"]`, `.spinner`, `.loading`, `.skeleton`, `[data-loading]`, `[role="progressbar"]`, ...) biến mất hoặc ẩn đi (`display: none` / `visibility: hidden`).
-   - **Cơ chế Exponential Backoff Retry Loop**:
-     - Khi tìm kiếm element hoặc thực hiện hành động thất bại, tự động thử lại tối đa 3 lần với khoảng chờ tăng dần: `500ms -> 1500ms -> 3000ms`.
-     - Mỗi chu kỳ retry kích hoạt lại `waitForUIQuiescence` để đảm bảo UI lắng đọng hoàn toàn trước khi quét lại DOM.
-   - **Nghiệm thu 5/5 Unit Tests PASSED 100%**:
-     - `Hằng số Exponential Backoff Retry`: [500, 1500, 3000].
-     - `Inflight Network Requests`: Chờ request API kết thúc và duy trì tĩnh 300ms.
-     - `DOM Mutation`: Bắt trúng biến đổi thuộc tính và duy trì tĩnh 200ms.
-     - `Spinner / Skeleton`: Đợi biến mất toàn bộ các biểu tượng loading.
-     - `Dynamic Retry Loop`: Tự phục hồi thành công khi phần tử render trễ trên SPA thực tế.
-   - Toàn bộ 4 kịch bản bẫy (`npm run test`) tiếp tục đạt kết quả chính xác 100%.
-10. **Triển khai Trụ cột 3 (Safety Margin $\Delta_{\text{margin}} \ge 20\%$) & Trụ cột 6 (Kiến trúc Actor-Critic Pipeline)**:
-    - File triển khai: [src/llm-bridge.ts](file:///e:/SourceCode/autotest/src/llm-bridge.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [src/types.ts](file:///e:/SourceCode/autotest/src/types.ts), [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [tests/actor-critic-margin.test.ts](file:///e:/SourceCode/autotest/tests/actor-critic-margin.test.ts).
-    - **Cơ chế Safety Margin ($\Delta_{\text{margin}}$)**:
-      - Tính toán $\Delta_{\text{margin}} = (\text{Top1\_Score} - \text{Top2\_Score}) / 100$.
-      - Khi $\Delta_{\text{margin}} < 0.20$ (chênh lệch dưới 20%) HOẶC $\text{Top1\_Score} < 0.85$ (85%): Hệ thống tự động đánh dấu trạng thái `AMBIGUOUS` và kích hoạt quy trình đa thể thức Actor-Critic Multimodal Resolution kèm ảnh chụp màn hình.
-      - Khi $\Delta_{\text{margin}} \ge 0.20$ VÀ $\text{Top1\_Score} \ge 0.85$: Kích hoạt Fast-Path chấp nhận ngay tức thì (0ms) với `criticVerdict: 'APPROVED'`.
-    - **Kiến trúc Actor-Critic Pipeline 2 Tầng**:
-      - *Bước 1 (Actor)*: LLM phân tích DOM + Bounding Box + Screenshot để đề xuất candidate (`candidateId`, `confidence`, `reasoning`).
-      - *Bước 2 (Critic)*: Gửi lại đề xuất cho Critic Model thẩm định câu hỏi an toàn ("Phần tử có chính xác là mục tiêu không? Có nguy cơ click nhầm nút đối lập hoặc sai ngữ cảnh không?").
-      - *Phủ quyết (Veto)*: Nếu Critic trả về `REJECTED`, Runner lập tức hủy hành động tương tác, gắn mã lỗi và cờ cảnh báo `AMBIGUOUS_TARGET`.
-      - *Vòng khóa bảo vệ kép*: Đối soát Antonym Barrier trực tiếp trên đề xuất của Actor để triệt tiêu mọi ảo giác (Hallucination).
-    - **Nghiệm thu 11/11 Unit Tests PASSED 100%** trong [tests/actor-critic-margin.test.ts](file:///e:/SourceCode/autotest/tests/actor-critic-margin.test.ts):
-      - Kiểm tra Safety Margin với trường hợp rõ ràng, trường hợp sát nút (< 20%), trường hợp điểm thấp (< 85%), và trường hợp hòa điểm (tie).
-      - Fast-path bypass khi biên an toàn vững chắc ($\Delta \ge 20\%$, Score $\ge 85\%$).
-      - Critic Veto: Phủ quyết đề xuất sai mục tiêu, hủy tương tác và gắn cờ `AMBIGUOUS_TARGET`.
-      - Critic Approved: Phê duyệt đề xuất chính xác, trả về kết quả `matchSource: 'LLM'`.
-      - Antonym Barrier bên trong Actor-Critic: Chặn đứng đề xuất nút đối nghịch và gắn cờ `ANTYNOM_VIOLATION`.
-      - Ambiguous Dead Tie: Tự động thất bại an toàn khi không thể phân định giữa 2 ứng viên bằng điểm nhau.
-      - Parser Actor & Critic: Đọc hiểu và bóc tách định dạng JSON linh hoạt kèm Markdown fenced code blocks.
-11. **Triển khai Trụ cột 7 (Native Browser Dialog Interceptor: Alert, Confirm, Prompt, BeforeUnload)**:
-    - File triển khai: [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/types.ts](file:///e:/SourceCode/autotest/src/types.ts), [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts), [src/settlement-barrier.ts](file:///e:/SourceCode/autotest/src/settlement-barrier.ts), [tests/native-dialog.test.ts](file:///e:/SourceCode/autotest/tests/native-dialog.test.ts).
-    - **Lắng nghe toàn cục thường trực (`page.on('dialog')`)**:
-      - Tự động ghi lại metadata: `type` (`alert`, `confirm`, `prompt`, `beforeunload`), `message`, `defaultValue`, `timestamp`, `actionTaken`, `promptInput`, `warning`, `stepNumber`.
-      - **Chiến lược giải phóng luồng thông minh**:
-        - `alert`: Tự động gọi `dialog.accept()`, ghi log execution `[NATIVE ALERT]`.
-        - `confirm`: Nếu bước kịch bản tiếp theo mang tính khẳng định ("Xác nhận", "Đồng ý", "OK") -> gọi `dialog.accept()`. Nếu là "Hủy" hoặc không nhắc tới -> gọi `dialog.accept()` mặc định để giải phóng luồng, đồng thời gắn cảnh báo `AI WARNING` vào báo cáo kiểm thử. Hỗ trợ cờ `allowDismissOnCancel` khi cần dismiss.
-        - `prompt`: Tự động trích xuất giá trị từ kịch bản hoặc giá trị mặc định để điền rồi `dialog.accept()`.
-        - `beforeunload`: Tự động gọi `dialog.accept()`, ngăn chặn hoàn toàn việc trình duyệt bị kẹt khi điều hướng trang.
-    - **Hỗ trợ hành động chuẩn `HANDLE_DIALOG` theo QUY_CHUAN_KICH_BAN.md**:
-      - Bổ sung parser cho câu lệnh `Chấp nhận hộp thoại` (`ACCEPT`) và `Hủy hộp thoại` (`DISMISS`) trong [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts).
-      - Hiện thực hóa khối lệnh xử lý `HANDLE_DIALOG` trong [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts).
-    - **Cung cấp API truy xuất lịch sử dialog**:
-      - Cung cấp: `getCapturedDialogs(page)`, `getLastCapturedDialog(page)`, `clearCapturedDialogs(page)`, `attachDialogInterceptor(page)`.
-      - Tích hợp 0ms Fast-Path cho `ASSERT_TEXT`: Kiểm tra nhanh trong lịch sử dialog, cho phép xác thực chính xác thông điệp từ native alert nằm ngoài cây DOM.
-    - **Nghiệm thu 9/9 Unit Tests PASSED 100%** trong [tests/native-dialog.test.ts](file:///e:/SourceCode/autotest/tests/native-dialog.test.ts):
-      - Alert tự động accept và ghi nhận message.
-      - Confirm tự động accept khi kịch bản khẳng định.
-      - Confirm tự động accept mặc định kèm cảnh báo khi không nhắc tới hoặc hủy.
-      - Confirm dismiss khi bật allowDismissOnCancel.
-      - Prompt tự động điền giá trị từ kịch bản.
-      - BeforeUnload tự động accept giải phóng điều hướng.
-      - API truy xuất & làm sạch lịch sử dialog.
-      - Parser DSL `HANDLE_DIALOG` (ACCEPT / DISMISS).
-      - E2E Strict Scenario với Native Alert và Assertion thông điệp.
-12. **Triển khai Trụ cột 8 (Multi-Tab Manager & Context Switcher)**:
-    - File triển khai: [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts), [tests/multi-tab.test.ts](file:///e:/SourceCode/autotest/tests/multi-tab.test.ts).
-    - **Lắng nghe sự kiện tab mới ở cấp độ Browser Context (`context.on('page')`)**:
-      - Tự động bắt mọi tab / popup window xuất hiện do click link `target="_blank"`, `window.open()`, OAuth SSO popup, hoặc Payment gateway.
-      - Tự động gắn `ActionSettlementBarrier` và `NativeDialogInterceptor` cho từng tab con ngay khi khởi tạo.
-      - Tự động đợi tab mới sẵn sàng (`newPage.waitForLoadState('domcontentloaded')`).
-      - Tự động gọi `newPage.bringToFront()` và chuyển con trỏ hoạt động chính (`activePage`) sang tab mới.
-      - Ghi log execution chuẩn mực: `[TAB SWITCH] Chuyển ngữ cảnh sang Tab mới: ${title} (${url})`.
-    - **Quản lý vòng đời tab & Cơ chế Fallback an toàn**:
-      - Cho phép runner đóng tab con và chủ động quay về tab gốc (`parentPage`) khi luồng phụ hoàn tất (`closeCurrentTab()`).
-      - Lắng nghe `newPage.on('close')`: Khi tab con bị đóng từ bên ngoài (e.g. `window.close()`), hệ thống tự động phát hiện và chuyển ngữ cảnh về tab gốc an toàn, ngăn ngừa triệt để lỗi tham chiếu đến trang đã bị đóng (Dangling Page Pointer).
-      - Cung cấp các API chuyển tab: `switchToTab(page)`, `switchToParent()`, `switchToLatestTab()`.
-    - **Tích hợp sâu vào `runStrictTestScenario`**:
-      - Mọi hành động tương tác (`CLICK`, `FILL`, `SEARCH`), cuộn trang, kiểm tra nội dung (`ASSERT_TEXT`, `ASSERT_URL`), vẽ status banner và chụp ảnh màn hình bằng chứng luôn được thực hiện chuẩn xác trên tab đang active.
-      - Hỗ trợ câu lệnh DSL `SWITCH_TAB`: `Chuyển tab mới`, `Chuyển tab`, `Đóng tab hiện tại`, `Quay về tab gốc`.
-      - Cơ chế gom dialogs toàn cục qua `tabManager.getAllCapturedDialogs()` giúp Fast-Path xác thực alert/confirm trên mọi tab.
-    - **Nghiệm thu 6/6 Unit & Integration Tests PASSED 100%** trong [tests/multi-tab.test.ts](file:///e:/SourceCode/autotest/tests/multi-tab.test.ts):
-      - Tự động lắng nghe `context.on('page')` và switch activePage khi click link `target="_blank"`.
-      - Quản lý vòng đời tab: Thao tác trên tab con, đóng tab con và tự động quay về tab gốc.
-      - Chuyển tab chủ động bằng `switchToTab`, `switchToParent`, `switchToLatestTab`.
-      - Tự động phục hồi khi tab con bị đóng từ bên ngoài (`newPage.on('close')`).
-      - Bắt trọn vẹn Native Alert xuất hiện trên tab con.
-      - Integration: `runStrictTestScenario` chạy hoàn hảo kịch bản 8 bước chuyển tab, điền dữ liệu tab con, đóng tab con và xác thực tab gốc.
-13. **Triển khai Trụ cột 10 (Virtualized List Incremental Scroll) & Trụ cột 11 (Custom Portal Dropdown Protocol)**:
-    - File triển khai: [src/runner.ts](file:///e:/SourceCode/autotest/src/runner.ts), [src/element-resolver.ts](file:///e:/SourceCode/autotest/src/element-resolver.ts), [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts), [src/dom-distiller.ts](file:///e:/SourceCode/autotest/src/dom-distiller.ts).
-    - Bộ test: [tests/virtual-scroll-dropdown.test.ts](file:///e:/SourceCode/autotest/tests/virtual-scroll-dropdown.test.ts) (12/12 tests PASS).
-    - **Trụ cột 10: Virtualized List Incremental Scroll Engine**:
-      - Khi phần tử mục tiêu không tìm thấy trong viewport hiện tại: Thực hiện cuộn phân đoạn (Step Scroll) 350px mỗi lần (tối đa 5 lần = 1750px).
-      - Hỗ trợ cuộn thông minh cho cả `window` và container ảo lồng nhau có `overflow-y: auto / scroll` (`.virtual-list`, `.rc-virtual-list-holder`, `[role="listbox"]`).
-      - Nín thở 200ms sau mỗi bước cuộn để Virtual DOM / API nạp và mount node mới rồi quét lại danh sách candidates.
-      - Cơ chế **Bottom Boundary Cutoff**: Nhận diện chạm đáy trang (`window.scrollY + window.innerHeight >= document.body.scrollHeight - 10`) để dừng cuộn khẩn cấp và fail-fast, ngăn chặn việc thử lại mù quáng.
-      - Kích hoạt `element.scrollIntoViewIfNeeded()` (hoặc căn giữa block: center) ngay khi tìm thấy phần tử trước khi thực hiện tương tác vật lý.
-    - **Trụ cột 11: Custom Select / Floating Portal Dropdown Protocol**:
-      - Nhận diện toàn diện Custom Select Trigger: Ant Design (`.ant-select-selector`), Material-UI (`.MuiSelect-select`, `[role="combobox"]`), React-Select (`.select__control`), Select2 (`.select2-selection`), Radix UI / Headless UI.
-      - **Chu trình 3 Pha bắt buộc**:
-        - **Pha 1 (Mở Menu)**: Cuộn và click trigger container.
-        - **Pha 2 (Đợi Portal Render)**: Chờ các selector overlay gắn tại cuối thẻ `<body>` (`body > [role="listbox"]`, `body > .ant-select-dropdown`, `.MuiAutocomplete-popper`, v.v.), nín thở 200ms cho animation mở menu hoàn tất.
-        - **Pha 3 (Tìm & Click Option)**: Quét option bên trong portal overlay, hỗ trợ đối soát chính xác, không dấu tiếng Việt và Damerau-Levenshtein fuzzy healing, click option và nín thở đợi settlement.
-        - **Khôi phục khi Menu Treo**: Nếu sau khi click mà portal vẫn còn mở che khuất các phần tử bên dưới, AI tự động gửi phím `Escape` để giải phóng màn hình.
-      - Hỗ trợ đầy đủ thẻ `<select>` native qua `selectOption` và dispatch `input`/`change` events.
-      - Bổ sung parser cho câu lệnh chọn dropdown tiếng Việt trong [src/step-parser.ts](file:///e:/SourceCode/autotest/src/step-parser.ts): `Chọn "[Option]" từ dropdown "[Select]"`.
-    - **Nghiệm thu 12/12 Unit & Integration Tests PASSED 100%**:
-      - Virtual list incremental scroll tìm thấy mục ở vị trí sâu.
-      - Bottom boundary cutoff dừng sớm khi trang ngắn chạm đáy.
-      - Cuộn phân đoạn bên trong scrollable box có overflow riêng.
-      - Nhận diện chính xác Trigger và Option của mọi framework UI.
-      - Ant Design custom dropdown 3-pha protocol.
-      - Material-UI dropdown với overlay portal cuối body.
-      - React-Select control và menu overlay.
-      - Tự động khôi phục khi menu treo bằng phím Escape.
-      - Biên dịch cú pháp DSL tự nhiên tiếng Việt cho hành động chọn dropdown.
-      - E2E runStrictTestScenario với Custom Dropdown Antd.
-      - E2E runStrictTestScenario với Native Select.
-      - E2E runStrictTestScenario với Virtual List Scroll sâu.
+| Hạng mục Prompt | Mô tả Kỹ thuật Triển khai | Test Suite & Kết Quả |
+| :--- | :--- | :--- |
+| **Prompt 01: Typo & Antonym Barrier** | Damerau-Levenshtein ($Sim \ge 0.75$) + Ma trận chặn từ đối lập (`Sign In` vs `Sign Out`) | `tests/element-resolver.test.ts` (14/14 PASS) |
+| **Prompt 02: Quiescence Watcher** | Inflight network = 0 (300ms) + DOM mutation = 0 (200ms) + Spinner check + Backoff retry | `tests/quiescence-retry.test.ts` (5/5 PASS) |
+| **Prompt 03: Actor-Critic & Safety Margin** | $\Delta_{\text{margin}} \ge 20\%$ & Top1 $\ge 85\%$ fast-path, Actor-Critic Veto guardrail | `tests/actor-critic-margin.test.ts` (11/11 PASS) |
+| **Prompt 04: Native Dialogs** | Persistent `page.on('dialog')` (alert, confirm, prompt, beforeunload) + 0ms Fast-Path | `tests/native-dialog.test.ts` (9/9 PASS) |
+| **Prompt 05: Multi-Tab Manager** | `context.on('page')` + Active page switching + Child tab lifecycle & fallback | `tests/multi-tab.test.ts` (6/6 PASS) |
+| **Prompt 06: Virtual Scroll & Dropdown** | Step scroll 350px/lần + Custom portal dropdown (Antd, MUI, React-Select) | `tests/virtual-scroll-dropdown.test.ts` (12/12 PASS) |
+| **Prompt 07: Masked Input & Circuit Breaker** | Post-fill integrity + Keystroke fallback (`pressSequentially`) + SHA-256 DOM hash Watchdog | `tests/masked-watchdog.test.ts` (9/9 PASS) |
+| **Prompt 08: XAI Audit Trail & Dashboard** | `aiAuditTrail` trong `report.json` + Web UI modal với Bounding Box + Forensic Autopsy | `tests/xai-audit-trail.test.ts` (5/5 PASS) |
+| **Prompt 09: Stress Benchmark Suite** | 6 bẫy hóc búa (Typo, Antonym, Quiescence, Mask, Dialog, Virtual List) | `tests/stress-ai-suite.test.ts` (8/8 PASS, 0% FP) |
+| **Prompt 10: Element Occlusion & Hit-Testing** | Safe Viewport Band + 5-Point Hit-Tester + Sutherland-Hodgman Centroid ($\ge 40\%$, `isTrusted: true`) | `tests/occlusion-hit-test.test.ts` (15/15 PASS) |
+| **Prompt 11: Implicit Dismissal Protocol** | Active Overlay Stack + Context-Boundary Crossing + 4-Tier Dismiss (W3C Escape, Re-Toggle, Neutral Click, Modal Guardrail) | `tests/implicit-dismissal.test.ts` (12/12 PASS) |
+| **Prompt 12: Nameless SVG Icon Topology** | Vector `[0,24]` Normalizer + Signature Bank + Sidebar Boundary Proximity + ARIA/Tooltip 4-Weight Scoring | `tests/nameless-svg.test.ts` (19/19 PASS) |
+| **Prompt 13: Adaptive Notification & Toast Evasion** | IEEE 29119 4-Severity Taxonomy + Expected/Unexpected Oracle + 4-Tier Toast Evasion Ladder | `tests/notification-oracle.test.ts` (10/10 PASS) |
+| **Prompt 14: Dual-Stream Vision & Set-of-Marks** | In-memory Canvas SoM Badges (`[1]..[N]`) + Gemini Multimodal Anti-Hallucination + L1/L2/L3 Cost Routing | `tests/multimodal-vision.test.ts` (9/9 PASS) |
 
 ---
 

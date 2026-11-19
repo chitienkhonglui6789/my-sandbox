@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { chromium, Page, BrowserContext } from 'playwright';
+import * as crypto from 'crypto';
+import { chromium, Page, BrowserContext, Frame } from 'playwright';
 import {
   AtomicAction,
   CapturedDialog,
@@ -8,10 +9,18 @@ import {
   FailureReasonCode,
   StepLog,
   TestRunResult,
+  XAIDecision,
+  StepAuditTrail,
+  AIForensicAutopsy,
 } from './types';
 import { compileVietnameseScenarioAsync } from './step-parser';
 import { distillPageDOM } from './dom-distiller';
-import { ActionSettlementBarrier } from './settlement-barrier';
+import {
+  ActionSettlementBarrier,
+  NotificationStepContext,
+  NotificationOracleReport,
+  DismissalResult,
+} from './settlement-barrier';
 import {
   resolveTargetCandidate,
   ResolveCandidateResult,
@@ -19,8 +28,102 @@ import {
   isPortalOption,
   resolvePortalOptionCandidate,
   FLOATING_PORTAL_SELECTORS,
+  computeDamerauSimilarity,
 } from './element-resolver';
 import { LLMBridge } from './llm-bridge';
+import {
+  scrollIntoSafeViewportBand,
+  resolveSafeClickPoint,
+  SafeClickResolution,
+} from './occlusion-engine';
+import { probeHoverTooltip, SvgIconCandidateInput } from './svg-icon-topology';
+
+export interface PhysicalActionTelemetry {
+  occlusionStrategy?: string;
+  dismissedOverlays?: string[];
+  notificationVerdict?: string;
+  notificationWarnings?: string[];
+  resolvedClickPoint?: { x: number; y: number };
+}
+
+function buildNotificationStepContext(
+  action: AtomicAction,
+  rawStepText: string,
+  nextRawStepText?: string,
+  nextSubActions?: AtomicAction[]
+): NotificationStepContext {
+  const expectedErrorTexts: string[] = [];
+  if (action.expectedText) {
+    expectedErrorTexts.push(action.expectedText);
+  }
+  if (nextSubActions) {
+    for (const na of nextSubActions) {
+      if (na.type === 'ASSERT_TEXT' && na.expectedText) {
+        expectedErrorTexts.push(na.expectedText);
+      }
+    }
+  }
+  return {
+    action,
+    upcomingActions: nextSubActions && nextSubActions.length > 0 ? nextSubActions : undefined,
+    stepText: nextRawStepText ? `${rawStepText} | ${nextRawStepText}` : rawStepText,
+    expectedErrorTexts: expectedErrorTexts.length > 0 ? expectedErrorTexts : undefined,
+    stepNumber: action.stepNumber,
+  };
+}
+
+function extractDismissedOverlayLabels(res: DismissalResult | null | undefined): string[] {
+  if (!res || res.dismissedCount <= 0) return [];
+  const labels: string[] = [];
+  for (const att of res.attempts || []) {
+    if (att.succeeded) {
+      labels.push(`${att.overlayKind}:${att.overlayId} (${att.tier})`);
+    }
+  }
+  if (labels.length === 0 && res.summary) {
+    labels.push(res.summary);
+  }
+  return labels;
+}
+
+function summarizeNotificationVerdict(
+  report: NotificationOracleReport | null | undefined
+): { verdict?: string; warnings: string[] } {
+  if (!report) return { warnings: [] };
+  const warnings = [...(report.warningLogs || [])];
+  if (report.items.length === 0) {
+    return { warnings };
+  }
+  if (report.productDefects.length > 0) {
+    return { verdict: 'PRODUCT_DEFECT', warnings };
+  }
+  if (report.hasExpectedErrorMatch || report.overallVerdict === 'EXPECTED_PASS') {
+    return { verdict: 'EXPECTED_PASS', warnings };
+  }
+  if (warnings.length > 0 || report.overallVerdict === 'PASS_WITH_WARNING') {
+    return { verdict: 'WARNING_LOGGED', warnings };
+  }
+  if (report.successEvidences.length > 0) {
+    return { verdict: 'SUCCESS_EVIDENCE', warnings };
+  }
+  if (report.ignoredInfos.length > 0) {
+    return { verdict: 'IGNORED', warnings };
+  }
+  return { verdict: report.overallVerdict, warnings };
+}
+
+function isPotentialOverlayTrigger(candidate: DOMCandidate): boolean {
+  if (!candidate || isPortalOption(candidate)) return false;
+  if (isCustomSelectTrigger(candidate)) return true;
+  if (candidate.ariaExpanded !== undefined || candidate.ariaControls !== undefined) return true;
+  const role = (candidate.role || '').toLowerCase();
+  if (role === 'combobox' || role === 'button' || role === 'menuitem') return true;
+  const classes = (candidate.fingerprint?.stableClasses || []).join(' ').toLowerCase();
+  if (/\b(dropdown|select|popover|menu|trigger|modal|dialog|open|toggle)\b/.test(classes)) {
+    return true;
+  }
+  return candidate.tag === 'button';
+}
 
 export interface RunOptions {
   url: string;
@@ -29,6 +132,7 @@ export interface RunOptions {
   outputDir?: string;
   casePrefix?: string;
   headless?: boolean;
+  deadlockThreshold?: number;
 }
 
 export const RETRY_BACKOFF_MS = [500, 1500, 3000];
@@ -581,7 +685,8 @@ export async function executeVirtualListScrollSearch(
     page.url(),
     action,
     currentCandidates,
-    options.screenshotBase64
+    options.screenshotBase64,
+    { page, enableVisionSoM: true }
   );
 
   if (resolved.candidate) {
@@ -658,27 +763,35 @@ export async function executeVirtualListScrollSearch(
       page.url(),
       action,
       currentCandidates,
-      options.screenshotBase64
+      options.screenshotBase64,
+      { page, enableVisionSoM: true }
     );
 
     if (resolved.candidate) {
-      // Kích hoạt scrollIntoViewIfNeeded() trước khi tương tác
+      // Prompt 10: Cuộn phần tử vào chính giữa Safe Viewport Band (fallback scrollIntoViewIfNeeded)
       const targetFrame =
         resolved.candidate.frameIndex !== undefined &&
         resolved.candidate.frameIndex < page.frames().length
           ? page.frames()[resolved.candidate.frameIndex]
           : page;
 
-      const loc = targetFrame.locator(resolved.candidate.selectorPath).first();
-      await loc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(async () => {
-        await loc.evaluate((el) => {
-          if (typeof (el as any).scrollIntoViewIfNeeded === 'function') {
-            (el as any).scrollIntoViewIfNeeded();
-          } else {
-            el.scrollIntoView({ behavior: 'instant', block: 'center' });
-          }
-        }).catch(() => {});
-      });
+      const frameArg: Frame | undefined = targetFrame !== page ? (targetFrame as Frame) : undefined;
+      const safeScrollRes = await scrollIntoSafeViewportBand(page, resolved.candidate, {
+        frame: frameArg,
+      }).catch(() => null);
+
+      if (!safeScrollRes || !safeScrollRes.inSafeBand) {
+        const loc = targetFrame.locator(resolved.candidate.selectorPath).first();
+        await loc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(async () => {
+          await loc.evaluate((el) => {
+            if (typeof (el as any).scrollIntoViewIfNeeded === 'function') {
+              (el as any).scrollIntoViewIfNeeded();
+            } else {
+              el.scrollIntoView({ behavior: 'instant', block: 'center' });
+            }
+          }).catch(() => {});
+        });
+      }
 
       return {
         found: true,
@@ -751,10 +864,25 @@ export async function executeCustomDropdownProtocol(
 
   const triggerLocator = targetFrame.locator(trigger.selectorPath).first();
 
-  // Pha 1: Click vào container trigger để mở popup menu
+  // Pha 1: Cuộn trigger vào Safe Viewport Band, ghi nhận trigger cho Prompt 11 Tier 2 Re-Toggle, rồi click vật lý mở popup menu
   try {
-    await triggerLocator.scrollIntoViewIfNeeded({ timeout: 2500 }).catch(() => {});
-    await triggerLocator.click({ timeout: 5000 });
+    const frameArg: Frame | undefined = targetFrame !== page ? (targetFrame as Frame) : undefined;
+    await scrollIntoSafeViewportBand(page, trigger, { frame: frameArg }).catch(async () => {
+      await triggerLocator.scrollIntoViewIfNeeded({ timeout: 2500 }).catch(() => {});
+    });
+    barrier.recordOverlayTrigger(trigger);
+
+    const safeTrigger = await resolveSafeClickPoint(page, trigger.rect, trigger, {
+      autoScroll: false,
+      frame: frameArg,
+    }).catch(() => null);
+
+    if (safeTrigger && safeTrigger.canClick && safeTrigger.clickPoint) {
+      await page.mouse.move(safeTrigger.clickPoint.x, safeTrigger.clickPoint.y);
+      await page.mouse.click(safeTrigger.clickPoint.x, safeTrigger.clickPoint.y);
+    } else {
+      await triggerLocator.click({ timeout: 5000 });
+    }
   } catch (err: any) {
     return {
       success: false,
@@ -931,6 +1059,155 @@ export async function executeCustomDropdownProtocol(
   };
 }
 
+// ============================================================================
+// TRỤ CỘT 12: POST-FILL MASKED INPUT INTEGRITY VERIFICATION (PILLAR 12)
+// ============================================================================
+
+/**
+ * Chuẩn hóa chuỗi bằng cách loại bỏ các ký tự định dạng tự sinh (khoảng trắng, gạch nối, dấu ngoặc).
+ */
+export function normalizeMaskedValue(str: string): string {
+  if (!str) return '';
+  return str.replace(/[\s\-\(\)]/g, '');
+}
+
+/**
+ * Kiểm tra tính toàn vẹn của ô nhập liệu có mặt nạ (Masked Input):
+ * Trả về true nếu actualVal chứa đủ các ký tự nghiệp vụ cần nhập từ expectedVal (sau khi đã chuẩn hóa).
+ */
+export function checkMaskedInputIntegrity(actualVal: string, expectedVal: string): boolean {
+  if (!expectedVal) return true;
+  if (actualVal === expectedVal) return true;
+
+  const normActual = normalizeMaskedValue(actualVal);
+  const normExpected = normalizeMaskedValue(expectedVal);
+
+  if (normActual === normExpected) return true;
+  if (normActual.includes(normExpected)) return true;
+
+  // Kiểm tra xem tất cả các ký tự của normExpected có xuất hiện theo thứ tự trong normActual không
+  let expIdx = 0;
+  for (let i = 0; i < normActual.length && expIdx < normExpected.length; i++) {
+    if (normActual[i] === normExpected[expIdx]) {
+      expIdx++;
+    }
+  }
+  return expIdx === normExpected.length;
+}
+
+// ============================================================================
+// TRỤ CỘT 14: DEADLOCK WATCHDOG CIRCUIT BREAKER (PILLAR 14)
+// ============================================================================
+
+/**
+ * Tính mã hash SHA-256 tóm tắt của DOM cây (URL + Document Title + Body Text Content).
+ */
+export async function computePageDomHash(page: Page): Promise<string> {
+  try {
+    const rawContent = await page.evaluate(() => {
+      const href = window.location.href || '';
+      const title = document.title || '';
+      const text = document.body ? document.body.innerText || '' : '';
+      return `${href}###${title}###${text}`;
+    });
+    return crypto.createHash('sha256').update(rawContent, 'utf8').digest('hex');
+  } catch {
+    return crypto.createHash('sha256').update(page.url() || 'about:blank', 'utf8').digest('hex');
+  }
+}
+
+export interface WatchdogCycleRecord {
+  cycle: number;
+  hash: string;
+  url: string;
+  success: boolean;
+  stepNumber?: number;
+  actionType?: string;
+  timestamp: number;
+}
+
+/**
+ * Bộ ngắt mạch chống treo (Deadlock Watchdog Circuit Breaker):
+ * - Theo dõi chuỗi trạng thái qua mã băm SHA-256 của DOM.
+ * - Nếu trong 3 chu kỳ thao tác liên tiếp, mã hash hoàn toàn không đổi và hành động thất bại liên tục:
+ *   -> Kích hoạt CIRCUIT_BREAKER_TRIGGERED để dừng khẩn cấp thay vì tiếp tục chạy vô nghĩa.
+ */
+export class DeadlockWatchdogCircuitBreaker {
+  private lastHash: string = '';
+  private consecutiveDeadlockCount: number = 0;
+  private readonly threshold: number;
+  private history: WatchdogCycleRecord[] = [];
+
+  constructor(threshold = 3) {
+    this.threshold = threshold;
+  }
+
+  public recordCycle(
+    hash: string,
+    success: boolean,
+    metadata: { url?: string; stepNumber?: number; actionType?: string } = {}
+  ): {
+    tripped: boolean;
+    consecutiveCount: number;
+    hash: string;
+  } {
+    const record: WatchdogCycleRecord = {
+      cycle: this.history.length + 1,
+      hash,
+      url: metadata.url || '',
+      success,
+      stepNumber: metadata.stepNumber,
+      actionType: metadata.actionType,
+      timestamp: Date.now(),
+    };
+    this.history.push(record);
+
+    if (success) {
+      // Thao tác thành công, reset bộ đếm kẹt
+      this.consecutiveDeadlockCount = 0;
+      this.lastHash = hash;
+      return { tripped: false, consecutiveCount: 0, hash };
+    }
+
+    // Thao tác thất bại
+    if (this.lastHash && this.lastHash === hash) {
+      this.consecutiveDeadlockCount++;
+    } else {
+      this.consecutiveDeadlockCount = 1;
+      this.lastHash = hash;
+    }
+
+    const tripped = this.consecutiveDeadlockCount >= this.threshold;
+    return {
+      tripped,
+      consecutiveCount: this.consecutiveDeadlockCount,
+      hash,
+    };
+  }
+
+  public isTripped(): boolean {
+    return this.consecutiveDeadlockCount >= this.threshold;
+  }
+
+  public getConsecutiveCount(): number {
+    return this.consecutiveDeadlockCount;
+  }
+
+  public getLastHash(): string {
+    return this.lastHash;
+  }
+
+  public getHistory(): WatchdogCycleRecord[] {
+    return [...this.history];
+  }
+
+  public reset(): void {
+    this.lastHash = '';
+    this.consecutiveDeadlockCount = 0;
+    this.history = [];
+  }
+}
+
 /**
  * STRICT STEP-BY-STEP TEST RUNNER
  * - Chạy tuần tự từng bước 1..N theo đúng kịch bản.
@@ -977,6 +1254,44 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
   const logs: StepLog[] = [];
 
+  function finalizeResult(res: TestRunResult): TestRunResult {
+    const reportPath = path.join(outputDir, 'report.json');
+    try {
+      const reportData = {
+        ...res,
+        steps: res.logs.map((l) => ({
+          stepNumber: l.step,
+          instruction: l.instruction,
+          status: l.status,
+          action: l.aiAuditTrail?.action || 'UNKNOWN',
+          targetHint: l.aiAuditTrail?.targetHint,
+          decision: l.aiAuditTrail?.decision,
+          quiescenceWaitMs: l.aiAuditTrail?.quiescenceWaitMs || l.durationMs,
+          screenshotPath: l.screenshotPath || l.aiAuditTrail?.screenshotPath || res.screenshotPath,
+          domHash: l.domHash,
+          autopsy: l.aiAuditTrail?.autopsy,
+          detail: l.detail,
+          durationMs: l.durationMs,
+          boundingBox: l.aiAuditTrail?.boundingBox,
+          routingTier: l.routingTier || l.aiAuditTrail?.decision?.routingTier,
+          somMarkId: l.somMarkId ?? l.aiAuditTrail?.decision?.somMarkId,
+          occlusionStrategy: l.occlusionStrategy || l.aiAuditTrail?.decision?.occlusionStrategy,
+          dismissedOverlays: l.dismissedOverlays || l.aiAuditTrail?.decision?.dismissedOverlays,
+          notificationVerdict: l.notificationVerdict || l.aiAuditTrail?.decision?.notificationVerdict,
+          notificationWarnings: l.notificationWarnings || l.aiAuditTrail?.decision?.notificationWarnings,
+        })),
+        aiAuditTrail: res.logs.map((l) => l.aiAuditTrail).filter(Boolean),
+      };
+      fs.writeFileSync(reportPath, JSON.stringify(reportData, null, 2), 'utf-8');
+      res.reportPath = reportPath;
+      res.steps = reportData.steps;
+      res.aiAuditTrail = reportData.aiAuditTrail as StepAuditTrail[];
+    } catch {
+      // ignore
+    }
+    return res;
+  }
+
   const browser = await chromium.launch({
     headless: options.headless !== false,
   });
@@ -996,6 +1311,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
   const tabManager = attachMultiTabManager(context, page);
   const dialogInterceptor = attachDialogInterceptor(page);
   const barrier = getOrCreateBarrier(page);
+  const deadlockWatchdog = new DeadlockWatchdogCircuitBreaker(options.deadlockThreshold || 3);
 
   try {
     // Mở URL mục tiêu và đợi trang ổn định
@@ -1019,6 +1335,13 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
       const subActions = stepGroups.get(stepNum) || [];
       const stepStart = Date.now();
       const subDetails: string[] = [];
+      let stepAuditTrail: StepAuditTrail | undefined = undefined;
+      let stepRoutingTier: 'L1' | 'L2' | 'L3' | undefined = undefined;
+      let stepSomMarkId: number | undefined = undefined;
+      let stepOcclusionStrategy: string | undefined = undefined;
+      const stepDismissedOverlays: string[] = [];
+      let stepNotificationVerdict: string | undefined = undefined;
+      const stepNotificationWarnings: string[] = [];
 
       const nextRawStep = compiled.rawSteps[stepIndex + 1];
       const nextSubActions = nextRawStep ? stepGroups.get(nextRawStep.stepNumber) || [] : [];
@@ -1182,6 +1505,20 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
           const p = tabManager.getActivePage();
           const b = getOrCreateBarrier(p);
           const expectedUrl = action.expectedUrlPart || '';
+          stepAuditTrail = {
+            stepNumber: stepNum,
+            action: action.type,
+            targetHint: expectedUrl,
+            decision: {
+              chosenElement: `URL: "${expectedUrl}"`,
+              healedIntent: expectedUrl,
+              confidence: 1.0,
+              criticVerdict: 'APPROVED',
+              reasoning: 'Kiểm tra đường dẫn URL trên trình duyệt',
+              matchSource: 'EXACT',
+            },
+            quiescenceWaitMs: Date.now() - stepStart,
+          };
           const ok = await b.verifyExpectedUrl(expectedUrl, 8000);
           if (!ok) {
             const reasonDetail = `Sai URL: Kỳ vọng đường dẫn chứa "${expectedUrl}" nhưng URL hiện tại là "${p.url()}".`;
@@ -1196,15 +1533,18 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             );
             await p.screenshot({ path: failShotPath, fullPage: false });
 
+            stepAuditTrail.screenshotPath = failShotPath;
             logs.push({
               step: stepNum,
               instruction: rawStep.text,
               status: 'FAILED',
               detail: reasonDetail,
               durationMs: Date.now() - stepStart,
+              aiAuditTrail: stepAuditTrail,
+              screenshotPath: failShotPath,
             });
 
-            return {
+            return finalizeResult({
               status: 'FAILED',
               url: options.url,
               totalSteps: compiled.totalSteps,
@@ -1216,7 +1556,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
               screenshotPath: failShotPath,
               totalDurationMs: Date.now() - startTime,
               logs,
-            };
+            });
           }
           subDetails.push(`Đã xác nhận URL chứa "${expectedUrl}"`);
           continue;
@@ -1227,6 +1567,21 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
           const p = tabManager.getActivePage();
           const b = getOrCreateBarrier(p);
           const expected = action.expectedText || '';
+
+          stepAuditTrail = {
+            stepNumber: stepNum,
+            action: action.type,
+            targetHint: expected,
+            decision: {
+              chosenElement: `TextContent: "${expected}"`,
+              healedIntent: expected,
+              confidence: 1.0,
+              criticVerdict: 'APPROVED',
+              reasoning: 'Kiểm tra nội dung văn bản hiển thị trên trang',
+              matchSource: 'EXACT',
+            },
+            quiescenceWaitMs: Date.now() - stepStart,
+          };
 
           // Kiểm tra xem nội dung kỳ vọng có xuất hiện trong các Native Dialogs (alert/confirm/prompt) đã bắt không (0ms Fast-Path)
           const allCaptured = tabManager.getAllCapturedDialogs();
@@ -1240,7 +1595,32 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             continue;
           }
 
-          const checkRes = await b.verifyExpectedText(expected, 16000);
+          const assertNotifStepCtx = buildNotificationStepContext(
+            action,
+            rawStep.text,
+            nextRawStep?.text,
+            nextSubActions
+          );
+          const checkRes = await b.verifyExpectedText(expected, 16000, assertNotifStepCtx);
+
+          const assertNotifSummary = summarizeNotificationVerdict(checkRes.notificationReport);
+          if (assertNotifSummary.verdict) {
+            stepNotificationVerdict = assertNotifSummary.verdict;
+            if (stepAuditTrail?.decision) {
+              stepAuditTrail.decision.notificationVerdict = assertNotifSummary.verdict;
+            }
+          }
+          if (assertNotifSummary.warnings.length > 0) {
+            for (const w of assertNotifSummary.warnings) {
+              if (!stepNotificationWarnings.includes(w)) stepNotificationWarnings.push(w);
+            }
+            if (stepAuditTrail?.decision) {
+              stepAuditTrail.decision.notificationWarnings = [...stepNotificationWarnings];
+            }
+          }
+          if (checkRes.successEvidences && checkRes.successEvidences.length > 0) {
+            subDetails.push(`[NOTIFICATION SUCCESS]: "${checkRes.successEvidences[0]}"`);
+          }
 
           if (!checkRes.matched) {
             // Kiểm tra lại lần nữa phòng trường hợp dialog vừa xuất hiện trong lúc chờ
@@ -1262,13 +1642,27 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
 
             const aiVerify = await LLMBridge.semanticVerifyWithAI(expected, pageText, shotBase64);
             if (aiVerify.matched) {
+              const assertPassHash = await computePageDomHash(p);
+              deadlockWatchdog.recordCycle(assertPassHash, true, {
+                url: p.url(),
+                stepNumber: stepNum,
+              });
               subDetails.push(`Đã xác nhận hiển thị "${expected}" [AI Semantic Verified: ${aiVerify.reasoning}]`);
               continue;
             }
 
+            const assertHash = await computePageDomHash(p);
+            const assertCycle = deadlockWatchdog.recordCycle(assertHash, false, {
+              url: p.url(),
+              stepNumber: stepNum,
+              actionType: action.type,
+            });
+
             const autopsy = await LLMBridge.diagnoseFailureWithAI(
               rawStep.text,
-              `Không tìm thấy nội dung "${expected}"`,
+              assertCycle.tripped
+                ? `CIRCUIT_BREAKER_TRIGGERED: Deadlock Watchdog ngắt mạch khẩn cấp khi kiểm tra assertion thất bại 3 chu kỳ liên tiếp trên DOM hoàn toàn không đổi (DOM SHA-256 Hash: ${assertHash})`
+                : `Không tìm thấy nội dung "${expected}"`,
               pageText,
               shotBase64
             );
@@ -1278,17 +1672,39 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
                 ? ` (Phát hiện thông báo lỗi trên màn hình: "${checkRes.detectedPageErrors.join(' | ')}")`
                 : ' (Nội dung không xuất hiện trên DOM)';
 
-            const reasonDetail = `Sai nội dung kiểm tra: Kỳ vọng hiện "${expected}" nhưng không tìm thấy${errExtra}. [AI Autopsy: (${autopsy.verdictCategory}) ${autopsy.rootCause}. Đề xuất: ${autopsy.recommendation}]`;
+            const reasonCode: FailureReasonCode = assertCycle.tripped
+              ? 'CIRCUIT_BREAKER_TRIGGERED'
+              : 'ASSERTION_MISMATCH';
+
+            const reasonDetail = assertCycle.tripped
+              ? `Ngắt mạch khẩn cấp chống treo (CIRCUIT_BREAKER_TRIGGERED): Deadlock Watchdog phát hiện 3 chu kỳ kiểm tra liên tiếp trên giao diện hoàn toàn không thay đổi (Hash: ${assertHash.slice(0, 16)}...) và nội dung "${expected}" không xuất hiện. [AI Forensic Autopsy: (${autopsy.verdictCategory}) ${autopsy.rootCause}. Đề xuất: ${autopsy.recommendation}]`
+              : `Sai nội dung kiểm tra: Kỳ vọng hiện "${expected}" nhưng không tìm thấy${errExtra}. [AI Autopsy: (${autopsy.verdictCategory}) ${autopsy.rootCause}. Đề xuất: ${autopsy.recommendation}]`;
+
             const failShotName = `${prefix}fail_step_${stepNum}.png`;
             const failShotPath = path.join(outputDir, failShotName);
 
             await drawStatusBannerOnPage(
               p,
               'FAILED',
-              `BƯỚC ${stepNum} FAILED: ${autopsy.rootCause || `Không thấy "${expected}"`}`,
+              assertCycle.tripped
+                ? `BƯỚC ${stepNum} CIRCUIT BREAKER TRIGGERED: Deadlock Watchdog (${assertHash.slice(0, 8)})`
+                : `BƯỚC ${stepNum} FAILED: ${autopsy.rootCause || `Không thấy "${expected}"`}`,
               null
             );
             await p.screenshot({ path: failShotPath, fullPage: false });
+
+            if (stepAuditTrail) {
+              stepAuditTrail.autopsy = {
+                failureCode: assertCycle.tripped ? 'CIRCUIT_BREAKER_TRIGGERED' : 'ASSERTION_MISMATCH',
+                verdictCategory: autopsy.verdictCategory,
+                rootCause: autopsy.rootCause,
+                recommendation: autopsy.recommendation,
+                suggestedRemediation: autopsy.recommendation,
+                confidence: 0.95,
+              };
+              stepAuditTrail.screenshotPath = failShotPath;
+              stepAuditTrail.domHash = assertHash;
+            }
 
             logs.push({
               step: stepNum,
@@ -1296,22 +1712,34 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
               status: 'FAILED',
               detail: reasonDetail,
               durationMs: Date.now() - stepStart,
+              domHash: assertHash,
+              aiAuditTrail: stepAuditTrail,
+              screenshotPath: failShotPath,
             });
 
-            return {
+            return finalizeResult({
               status: 'FAILED',
               url: options.url,
               totalSteps: compiled.totalSteps,
               completedSteps,
               failedStep: stepNum,
-              reasonCode: 'ASSERTION_MISMATCH',
+              reasonCode,
               reasonDetail,
-              summary: `FAILED: Dừng ngay tại bước ${stepNum}/${compiled.totalSteps} | Lý do: ${reasonDetail}`,
+              summary: assertCycle.tripped
+                ? `FAILED: Dừng ngay tại bước ${stepNum}/${compiled.totalSteps} do ngắt mạch chống treo (CIRCUIT_BREAKER_TRIGGERED) | Lý do: ${reasonDetail}`
+                : `FAILED: Dừng ngay tại bước ${stepNum}/${compiled.totalSteps} | Lý do: ${reasonDetail}`,
               screenshotPath: failShotPath,
               totalDurationMs: Date.now() - startTime,
               logs,
-            };
+              circuitBreakerTripped: assertCycle.tripped ? true : undefined,
+            });
           }
+
+          const assertPassHash = await computePageDomHash(p);
+          deadlockWatchdog.recordCycle(assertPassHash, true, {
+            url: p.url(),
+            stepNumber: stepNum,
+          });
 
           subDetails.push(`Đã xác nhận hiển thị "${expected}"`);
           continue;
@@ -1328,6 +1756,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
         let actionExecuted = false;
         let executionError: Error | null = null;
         let latestPreShotBase64: string | undefined = undefined;
+        let circuitBreakerTriggered = false;
 
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
           const iterPage = tabManager.getActivePage();
@@ -1353,15 +1782,73 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             iterPage.url(),
             action,
             lastCandidates,
-            latestPreShotBase64
+            latestPreShotBase64,
+            { page: iterPage, enableVisionSoM: true }
           );
+
+          // Prompt 12: Synthetic Hover Tooltip Trap cho nút SVG không nhãn nếu resolve lần đầu chưa đạt / mơ hồ
+          if (
+            (!resolved.candidate || resolved.flag === 'AMBIGUOUS_TARGET') &&
+            resolved.flag !== 'ANTYNOM_VIOLATION' &&
+            (action.type === 'CLICK' || action.type === 'HOVER' || action.type === 'SEARCH')
+          ) {
+            const namelessSvgCands = lastCandidates
+              .filter(
+                (c) =>
+                  (!c.text || !c.text.trim()) &&
+                  (!c.ariaLabel || !c.ariaLabel.trim()) &&
+                  Boolean(c.svgMarkup || c.svgTopologyData) &&
+                  !(
+                    c.svgTopologyData &&
+                    (c.svgTopologyData as SvgIconCandidateInput).tooltip?.found
+                  )
+              )
+              .sort((a, b) => (b.svgScore ?? 0) - (a.svgScore ?? 0))
+              .slice(0, 3);
+
+            if (namelessSvgCands.length > 0) {
+              let harvestedAnyTooltip = false;
+              const hintText = action.targetHint || action.subInstruction || '';
+              for (const svgCand of namelessSvgCands) {
+                const tip = await probeHoverTooltip(
+                  iterPage,
+                  svgCand.selectorPath || svgCand.rect,
+                  { targetHint: hintText, waitMs: 220, cleanupHover: true }
+                ).catch(() => null);
+                if (tip && tip.found && tip.tooltipText.trim()) {
+                  harvestedAnyTooltip = true;
+                  svgCand.virtualLabel = svgCand.virtualLabel
+                    ? `${svgCand.virtualLabel} ${tip.tooltipText}`.trim()
+                    : tip.tooltipText;
+                  if (svgCand.svgTopologyData && typeof svgCand.svgTopologyData === 'object') {
+                    (svgCand.svgTopologyData as SvgIconCandidateInput).tooltip = tip;
+                  }
+                }
+              }
+              if (harvestedAnyTooltip) {
+                resolved = await resolveTargetCandidate(
+                  iterPage.url(),
+                  action,
+                  lastCandidates,
+                  latestPreShotBase64,
+                  { page: iterPage, enableVisionSoM: true }
+                );
+              }
+            }
+          }
 
           // Trụ cột 10: Virtualized List Incremental Scroll Engine
           // Khi phần tử mục tiêu không tìm thấy trong viewport hiện tại:
           // Không fail ngay; thực hiện cuộn phân đoạn (Step Scroll): Cuộn xuống 350px mỗi lần (tối đa 5 lần = 1750px).
           // Sau mỗi lần cuộn, đợi 200ms để DOM ảo mount node mới rồi quét lại danh sách candidates.
+          const isVisionCoordResolved =
+            !resolved.candidate &&
+            resolved.matchSource === 'VISION_SOM' &&
+            Boolean(resolved.clickPoint || resolved.resolvedBox);
+
           if (
             !resolved.candidate &&
+            !isVisionCoordResolved &&
             (action.type === 'CLICK' ||
               action.type === 'SELECT_ITEM' ||
               action.type === 'FILL' ||
@@ -1384,53 +1871,439 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             }
           }
 
-          // CỔNG 1: Kiểm tra tồn tại phần tử
-          if (!resolved.candidate) {
+          const finalIsVisionCoord =
+            !resolved.candidate &&
+            resolved.matchSource === 'VISION_SOM' &&
+            Boolean(resolved.clickPoint || resolved.resolvedBox);
+
+          // Cập nhật telemetry định tuyến L1/L2/L3 (Prompt 14)
+          const resolvedRoutingTier =
+            resolved?.routingTier || resolved?.routingTelemetry?.tier;
+          const resolvedSomMarkId =
+            resolved?.somMarkId ?? resolved?.routingTelemetry?.somMarkId ?? undefined;
+          const resolvedCostUsd = resolved?.routingTelemetry?.estimatedCostUsd;
+          const resolvedLatencyMs = resolved?.routingTelemetry?.latencyMs;
+          if (resolvedRoutingTier) stepRoutingTier = resolvedRoutingTier;
+          if (typeof resolvedSomMarkId === 'number') stepSomMarkId = resolvedSomMarkId;
+
+          const candidateForAudit = resolved?.candidate || target;
+
+          // Bảo toàn damerauDistance & healedIntent cho XAI Audit Trail khi ứng viên được chữa lành lỗi chính tả
+          // ngay cả khi deltaMargin > 1.0 kích hoạt nhánh L3/LLM fallback
+          if (
+            resolved &&
+            candidateForAudit &&
+            resolved.damerauDistance === undefined &&
+            action.targetHint
+          ) {
+            const candidateLabels = [
+              candidateForAudit.text,
+              candidateForAudit.ariaLabel,
+              candidateForAudit.placeholder,
+              candidateForAudit.nearLabel,
+              candidateForAudit.value,
+            ].filter((s): s is string => Boolean(s && s.trim()));
+
+            const hintClean = action.targetHint.trim().toLowerCase();
+            const hasExactLabel = candidateLabels.some(
+              (lbl) => lbl.trim().toLowerCase() === hintClean
+            );
+            if (!hasExactLabel) {
+              for (const lbl of candidateLabels) {
+                const dam = computeDamerauSimilarity(action.targetHint, lbl);
+                if (dam.isAcceptable && dam.distance >= 1) {
+                  resolved.damerauDistance = dam.distance;
+                  resolved.similarity = dam.similarity;
+                  if (resolved.matchSource !== 'SVG_TOPOLOGY' && resolved.matchSource !== 'VISION_SOM') {
+                    resolved.matchSource = 'FUZZY_HEALED';
+                  }
+                  break;
+                }
+              }
+            }
+          }
+
+          const auditBBox =
+            candidateForAudit?.rect ||
+            (resolved?.resolvedBox
+              ? {
+                  x: resolved.resolvedBox.x,
+                  y: resolved.resolvedBox.y,
+                  width: resolved.resolvedBox.width,
+                  height: resolved.resolvedBox.height,
+                }
+              : undefined);
+
+          stepAuditTrail = {
+            stepNumber: stepNum,
+            action: action.type,
+            targetHint: action.targetHint || action.subInstruction,
+            decision: {
+              chosenElement: candidateForAudit
+                ? `<${candidateForAudit.tag}>${candidateForAudit.elemId ? '#' + candidateForAudit.elemId : ''}${candidateForAudit.text ? ' "' + candidateForAudit.text + '"' : ''}`
+                : finalIsVisionCoord
+                ? `VisionSoM Mark #${resolvedSomMarkId ?? '?'}`
+                : undefined,
+              healedIntent:
+                resolved?.matchSource === 'FUZZY_HEALED' ||
+                (resolved?.damerauDistance !== undefined && resolved.damerauDistance > 0)
+                  ? candidateForAudit?.text || candidateForAudit?.nearLabel || candidateForAudit?.placeholder
+                  : undefined,
+              damerauDistance: resolved?.damerauDistance,
+              confidence:
+                resolved?.confidence ?? (resolved?.similarity ?? (resolved?.matchSource === 'SEMANTIC_RULE' ? 1.0 : 0.95)),
+              deltaMargin: resolved?.deltaMargin,
+              criticVerdict: resolved?.criticVerdict || (resolved?.flag ? 'REJECTED' : 'APPROVED'),
+              reasoning:
+                resolved?.reasoning ||
+                (resolved?.matchSource === 'FUZZY_HEALED'
+                  ? `Tự phục hồi lỗi chính tả "${action.targetHint}" -> "${candidateForAudit?.text || ''}" (Damerau distance: ${resolved?.damerauDistance})`
+                  : `Khớp phần tử mục tiêu trên DOM`),
+              matchSource: resolved?.matchSource,
+              flag: resolved?.flag,
+              routingTier: resolvedRoutingTier,
+              somMarkId: typeof resolvedSomMarkId === 'number' ? resolvedSomMarkId : undefined,
+              estimatedCostUsd: resolvedCostUsd,
+              routingLatencyMs: resolvedLatencyMs,
+              occlusionStrategy: stepOcclusionStrategy,
+              dismissedOverlays: stepDismissedOverlays.length > 0 ? [...stepDismissedOverlays] : undefined,
+              notificationVerdict: stepNotificationVerdict,
+              notificationWarnings:
+                stepNotificationWarnings.length > 0 ? [...stepNotificationWarnings] : undefined,
+            },
+            quiescenceWaitMs: Date.now() - stepStart,
+            boundingBox: auditBBox,
+          };
+
+          let attemptFailed = false;
+
+          // CỔNG 1: Kiểm tra tồn tại phần tử (hỗ trợ cả L3 Vision SoM coordinate-only cho <canvas>/WebGL)
+          if (!resolved.candidate && !finalIsVisionCoord) {
+            attemptFailed = true;
+          } else if (finalIsVisionCoord) {
+            // Prompt 14: Click vật lý trực tiếp vào tọa độ tâm Set-of-Marks (không cần DOM selector)
+            try {
+              const clickPt = resolved.clickPoint || {
+                x: resolved.resolvedBox!.x + resolved.resolvedBox!.width / 2,
+                y: resolved.resolvedBox!.y + resolved.resolvedBox!.height / 2,
+              };
+              const somDismiss = await iterBarrier
+                .dismissHangingOverlaysIfCrossing({
+                  rect: resolved.resolvedBox || undefined,
+                  point: clickPt,
+                  targetHint: action.targetHint,
+                  actionType: action.type,
+                })
+                .catch(() => null);
+              const somDismissLabels = extractDismissedOverlayLabels(somDismiss);
+              if (somDismissLabels.length > 0) {
+                for (const lbl of somDismissLabels) {
+                  if (!stepDismissedOverlays.includes(lbl)) stepDismissedOverlays.push(lbl);
+                }
+              }
+
+              iterBarrier.resetQuietTimers();
+              await iterPage.mouse.move(clickPt.x, clickPt.y);
+              await iterPage.mouse.click(clickPt.x, clickPt.y);
+              await waitForUIQuiescence(iterPage, 7000, iterBarrier);
+              stepOcclusionStrategy = 'VISION_SOM_PHYSICAL_CLICK';
+              if (stepAuditTrail?.decision) {
+                stepAuditTrail.decision.occlusionStrategy = stepOcclusionStrategy;
+                if (stepDismissedOverlays.length > 0) {
+                  stepAuditTrail.decision.dismissedOverlays = [...stepDismissedOverlays];
+                }
+              }
+              actionExecuted = true;
+              await tabManager.waitForPendingTransitions(1200);
+              const postActionTabLogs = tabManager.consumePendingLogMessages();
+              if (postActionTabLogs.length > 0) {
+                subDetails.push(...postActionTabLogs);
+              }
+              break;
+            } catch (err: any) {
+              executionError = err;
+              attemptFailed = true;
+            }
+          } else {
+            target = resolved.candidate!;
+
+            // Prompt 11: Trước khi tương tác với E_next, tự động giải phóng lớp phủ treo nếu vượt ranh giới ngữ cảnh
+            if (
+              action.type === 'CLICK' ||
+              action.type === 'FILL' ||
+              action.type === 'SEARCH' ||
+              action.type === 'SELECT_ITEM' ||
+              action.type === 'SELECT_OPTION' ||
+              action.type === 'HOVER'
+            ) {
+              const preDismissRes = await iterBarrier
+                .dismissHangingOverlaysIfCrossing({
+                  selector: target.selectorPath,
+                  elemId: target.elemId,
+                  rect: target.rect,
+                  point: target.safeClickPoint || {
+                    x: target.rect.x + target.rect.width / 2,
+                    y: target.rect.y + target.rect.height / 2,
+                  },
+                  candidate: target,
+                  targetHint: action.targetHint,
+                  actionType: action.type,
+                })
+                .catch(() => null);
+
+              const dismissedNow = extractDismissedOverlayLabels(preDismissRes);
+              if (dismissedNow.length > 0) {
+                for (const lbl of dismissedNow) {
+                  if (!stepDismissedOverlays.includes(lbl)) stepDismissedOverlays.push(lbl);
+                }
+                subDetails.push(`[IMPLICIT DISMISS] Đã tự động đóng lớp phủ treo: ${dismissedNow.join(', ')}`);
+                await waitForUIQuiescence(iterPage, 500, iterBarrier).catch(() => {});
+                if (target.obscured) {
+                  const postDismissSafe = await resolveSafeClickPoint(
+                    iterPage,
+                    target.rect,
+                    target,
+                    { autoScroll: true }
+                  ).catch(() => null);
+                  if (postDismissSafe?.canClick && postDismissSafe.clickPoint) {
+                    target.obscured = false;
+                    target.safeClickPoint = postDismissSafe.clickPoint;
+                    stepOcclusionStrategy =
+                      postDismissSafe.scrolledToSafeBand && postDismissSafe.strategy === 'CENTER'
+                        ? 'SAFE_BAND_SCROLL'
+                        : postDismissSafe.strategy;
+                  }
+                }
+              }
+            }
+
+            // CỔNG 2: Kiểm tra trạng thái bị khóa (ELEMENT_DISABLED)
+            if (target.disabled) {
+              attemptFailed = true;
+            } else {
+              // CỔNG 3: Nếu phần tử đang bị che khuất, kích hoạt Prompt 10 (Safe Band + Sutherland-Hodgman)
+              // và Prompt 13 (4-Tier Toast Evasion) trước khi kết luận ELEMENT_OBSCURED
+              if (target.obscured) {
+                const targetFrameForCheck =
+                  target.frameIndex !== undefined && target.frameIndex < iterPage.frames().length
+                    ? iterPage.frames()[target.frameIndex]
+                    : undefined;
+                const frameArgForCheck: Frame | undefined =
+                  targetFrameForCheck && targetFrameForCheck !== iterPage.mainFrame()
+                    ? targetFrameForCheck
+                    : undefined;
+
+                let recoverySafe = await resolveSafeClickPoint(iterPage, target.rect, target, {
+                  autoScroll: true,
+                  frame: frameArgForCheck,
+                }).catch(() => null);
+
+                if (recoverySafe && !recoverySafe.canClick && recoverySafe.requiresDismissalLadder) {
+                  const toastEvasion = await iterBarrier
+                    .evadeOccludingToasts(recoverySafe.targetRect || target.rect, {
+                      targetSelector: target.selectorPath,
+                    })
+                    .catch(() => null);
+                  if (toastEvasion && toastEvasion.evaded && toastEvasion.occludedInitially) {
+                    if (toastEvasion.restore) {
+                      await toastEvasion.restore().catch(() => {});
+                    }
+                    recoverySafe = await resolveSafeClickPoint(
+                      iterPage,
+                      recoverySafe.targetRect || target.rect,
+                      target,
+                      { autoScroll: false, frame: frameArgForCheck }
+                    ).catch(() => recoverySafe);
+                  }
+                }
+
+                if (recoverySafe && recoverySafe.canClick && recoverySafe.clickPoint) {
+                  target.obscured = false;
+                  target.safeClickPoint = recoverySafe.clickPoint;
+                  if (recoverySafe.targetRect) {
+                    target.rect = recoverySafe.targetRect;
+                  }
+                  stepOcclusionStrategy =
+                    recoverySafe.scrolledToSafeBand && recoverySafe.strategy === 'CENTER'
+                      ? 'SAFE_BAND_SCROLL'
+                      : recoverySafe.strategy;
+                }
+              }
+
+              if (target.obscured) {
+                attemptFailed = true;
+              } else {
+                // CỔNG 4: Thực thi thao tác vật lý
+                try {
+                  iterBarrier.resetQuietTimers();
+                  const actionTelemetry: PhysicalActionTelemetry = {};
+                  await executePhysicalAction(iterPage, iterBarrier, action, target, actionTelemetry);
+
+                  if (actionTelemetry.occlusionStrategy) {
+                    stepOcclusionStrategy = actionTelemetry.occlusionStrategy;
+                  }
+                  if (actionTelemetry.dismissedOverlays && actionTelemetry.dismissedOverlays.length > 0) {
+                    for (const lbl of actionTelemetry.dismissedOverlays) {
+                      if (!stepDismissedOverlays.includes(lbl)) stepDismissedOverlays.push(lbl);
+                    }
+                  }
+                  if (stepAuditTrail?.decision) {
+                    if (stepOcclusionStrategy) {
+                      stepAuditTrail.decision.occlusionStrategy = stepOcclusionStrategy;
+                    }
+                    if (stepDismissedOverlays.length > 0) {
+                      stepAuditTrail.decision.dismissedOverlays = [...stepDismissedOverlays];
+                    }
+                  }
+
+                  actionExecuted = true;
+
+                  // Nếu thao tác vừa thực hiện có khả năng mở tab mới, đợi và cập nhật ngữ cảnh
+                  await tabManager.waitForPendingTransitions(1200);
+                  const postActionTabLogs = tabManager.consumePendingLogMessages();
+                  if (postActionTabLogs.length > 0) {
+                    subDetails.push(...postActionTabLogs);
+                  }
+
+                  break; // Thao tác thành công!
+                } catch (err: any) {
+                  executionError = err;
+                  attemptFailed = true;
+                }
+              }
+            }
+          }
+
+          if (attemptFailed) {
+            const currentHash = await computePageDomHash(iterPage);
+            const cycle = deadlockWatchdog.recordCycle(currentHash, false, {
+              url: iterPage.url(),
+              stepNumber: stepNum,
+              actionType: action.type,
+            });
+            if (cycle.tripped) {
+              circuitBreakerTriggered = true;
+              break;
+            }
             if (attempt < maxRetries) {
               continue; // Thử lại với exponential backoff
             }
-            break; // Đã hết 3 lượt retry
+            break; // Đã hết lượt retry
+          }
+        }
+
+        if (actionExecuted) {
+          const postActionPage = tabManager.getActivePage();
+          const postActionBarrier = getOrCreateBarrier(postActionPage);
+          const postActionHash = await computePageDomHash(postActionPage);
+          deadlockWatchdog.recordCycle(postActionHash, true, {
+            url: postActionPage.url(),
+            stepNumber: stepNum,
+            actionType: action.type,
+          });
+
+          // Prompt 13: Đánh giá thông báo nổi sau thao tác theo chuẩn IEEE 29119
+          // SUCCESS -> bằng chứng PASS (cấm fail); INFO -> bỏ qua; WARNING -> ghi cảnh báo (cấm fail);
+          // ERROR -> EXPECTED_PASS nếu khớp kỳ vọng phủ định, ngược lại ghi nhận PRODUCT_DEFECT.
+          const postNotifCtx = buildNotificationStepContext(
+            action,
+            rawStep.text,
+            nextRawStep?.text,
+            nextSubActions
+          );
+          const postNotifReport = await postActionBarrier
+            .evaluateStepNotifications(postNotifCtx)
+            .catch(() => null);
+          const postNotifSummary = summarizeNotificationVerdict(postNotifReport);
+          if (postNotifSummary.verdict) {
+            stepNotificationVerdict = postNotifSummary.verdict;
+            if (stepAuditTrail?.decision) {
+              stepAuditTrail.decision.notificationVerdict = postNotifSummary.verdict;
+            }
+          }
+          if (postNotifSummary.warnings.length > 0) {
+            for (const w of postNotifSummary.warnings) {
+              if (!stepNotificationWarnings.includes(w)) stepNotificationWarnings.push(w);
+            }
+            if (stepAuditTrail?.decision) {
+              stepAuditTrail.decision.notificationWarnings = [...stepNotificationWarnings];
+            }
+            subDetails.push(`[NOTIFICATION WARNING]: ${postNotifSummary.warnings.join(' | ')}`);
+          }
+          if (postNotifReport && postNotifReport.successEvidences.length > 0) {
+            subDetails.push(`[NOTIFICATION SUCCESS]: ${postNotifReport.successEvidences[0]}`);
+          }
+          if (postNotifReport && postNotifReport.productDefects.length > 0) {
+            subDetails.push(`[NOTIFICATION ORACLE: PRODUCT_DEFECT] ${postNotifReport.productDefects.join(' | ')}`);
+          }
+        }
+
+        // Trụ cột 14: Nếu Deadlock Watchdog Circuit Breaker bị kích hoạt
+        if (circuitBreakerTriggered || deadlockWatchdog.isTripped()) {
+          const failPage = tabManager.getActivePage();
+          const domHash = deadlockWatchdog.getLastHash();
+          const pageText = await failPage.evaluate(() => document.body.innerText || '').catch(() => '');
+          const shotBuf = await failPage.screenshot({ fullPage: false }).catch(() => null);
+          const shotBase64 = shotBuf ? shotBuf.toString('base64') : latestPreShotBase64;
+
+          const autopsy = await LLMBridge.diagnoseFailureWithAI(
+            rawStep.text,
+            `CIRCUIT_BREAKER_TRIGGERED: Deadlock Watchdog ngắt mạch khẩn cấp do 3 chu kỳ liên tiếp DOM hoàn toàn không thay đổi và hành động thất bại liên tục (DOM SHA-256 Hash: ${domHash})`,
+            pageText,
+            shotBase64
+          );
+
+          const reasonDetail = `Ngắt mạch khẩn cấp chống treo (CIRCUIT_BREAKER_TRIGGERED): Deadlock Watchdog phát hiện 3 chu kỳ thao tác liên tiếp trên giao diện hoàn toàn không thay đổi (Hash: ${domHash.slice(0, 16)}...) và hành động thất bại liên tục. [AI Forensic Autopsy: (${autopsy.verdictCategory}) ${autopsy.rootCause}. Đề xuất: ${autopsy.recommendation}]`;
+
+          const failShotName = `${prefix}fail_step_${stepNum}.png`;
+          const failShotPath = path.join(outputDir, failShotName);
+
+          await drawStatusBannerOnPage(
+            failPage,
+            'FAILED',
+            `BƯỚC ${stepNum} CIRCUIT BREAKER TRIGGERED: Deadlock Watchdog (${domHash.slice(0, 8)})`,
+            target
+          );
+          await failPage.screenshot({ path: failShotPath, fullPage: false });
+
+          if (stepAuditTrail) {
+            stepAuditTrail.autopsy = {
+              failureCode: 'CIRCUIT_BREAKER_TRIGGERED',
+              verdictCategory: autopsy.verdictCategory,
+              rootCause: autopsy.rootCause,
+              recommendation: autopsy.recommendation,
+              suggestedRemediation: autopsy.recommendation,
+              confidence: 0.95,
+            };
+            stepAuditTrail.screenshotPath = failShotPath;
+            stepAuditTrail.domHash = domHash;
           }
 
-          target = resolved.candidate;
+          logs.push({
+            step: stepNum,
+            instruction: rawStep.text,
+            status: 'FAILED',
+            detail: reasonDetail,
+            durationMs: Date.now() - stepStart,
+            domHash,
+            aiAuditTrail: stepAuditTrail,
+            screenshotPath: failShotPath,
+          });
 
-          // CỔNG 2: Kiểm tra trạng thái bị khóa (ELEMENT_DISABLED)
-          if (target.disabled) {
-            if (attempt < maxRetries) {
-              continue; // Có thể nút đang bị disabled tạm thời chờ debounce / API validation
-            }
-            break; // Đã hết 3 lượt retry
-          }
-
-          // CỔNG 3: Kiểm tra bị che khuất bởi lớp phủ (ELEMENT_OBSCURED)
-          if (target.obscured) {
-            if (attempt < maxRetries) {
-              continue; // Có thể modal / backdrop đang mờ dần (fade out)
-            }
-            break; // Đã hết 3 lượt retry
-          }
-
-          // CỔNG 4: Thực thi thao tác vật lý
-          try {
-            iterBarrier.resetQuietTimers();
-            await executePhysicalAction(iterPage, iterBarrier, action, target);
-            actionExecuted = true;
-
-            // Nếu thao tác vừa thực hiện có khả năng mở tab mới, đợi và cập nhật ngữ cảnh
-            await tabManager.waitForPendingTransitions(1200);
-            const postActionTabLogs = tabManager.consumePendingLogMessages();
-            if (postActionTabLogs.length > 0) {
-              subDetails.push(...postActionTabLogs);
-            }
-
-            break; // Thao tác thành công!
-          } catch (err: any) {
-            executionError = err;
-            if (attempt < maxRetries) {
-              continue; // Thử lại nếu thực hiện thao tác thất bại
-            }
-            break; // Đã hết 3 lượt retry
-          }
+          return finalizeResult({
+            status: 'FAILED',
+            url: options.url,
+            totalSteps: compiled.totalSteps,
+            completedSteps,
+            failedStep: stepNum,
+            reasonCode: 'CIRCUIT_BREAKER_TRIGGERED',
+            reasonDetail,
+            summary: `FAILED: Dừng ngay tại bước ${stepNum}/${compiled.totalSteps} do ngắt mạch chống treo (CIRCUIT_BREAKER_TRIGGERED) | Lý do: ${reasonDetail}`,
+            screenshotPath: failShotPath,
+            totalDurationMs: Date.now() - startTime,
+            logs,
+            circuitBreakerTripped: true,
+          });
         }
 
         // Nếu sau vòng lặp retry mà hành động chưa được thực thi thành công:
@@ -1481,15 +2354,29 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             );
             await failPage.screenshot({ path: failShotPath, fullPage: false });
 
+            if (stepAuditTrail) {
+              stepAuditTrail.autopsy = {
+                failureCode: reasonCode,
+                verdictCategory: autopsy.verdictCategory,
+                rootCause: autopsy.rootCause,
+                recommendation: autopsy.recommendation,
+                suggestedRemediation: autopsy.recommendation,
+                confidence: 0.95,
+              };
+              stepAuditTrail.screenshotPath = failShotPath;
+            }
+
             logs.push({
               step: stepNum,
               instruction: rawStep.text,
               status: 'FAILED',
               detail: reasonDetail,
               durationMs: Date.now() - stepStart,
+              aiAuditTrail: stepAuditTrail,
+              screenshotPath: failShotPath,
             });
 
-            return {
+            return finalizeResult({
               status: 'FAILED',
               url: options.url,
               totalSteps: compiled.totalSteps,
@@ -1502,7 +2389,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
               screenshotPath: failShotPath,
               totalDurationMs: Date.now() - startTime,
               logs,
-            };
+            });
           }
 
           // Trường hợp 2: Phần tử bị disabled (ELEMENT_DISABLED)
@@ -1530,15 +2417,29 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             );
             await failPage.screenshot({ path: failShotPath, fullPage: false });
 
+            if (stepAuditTrail) {
+              stepAuditTrail.autopsy = {
+                failureCode: 'ELEMENT_DISABLED',
+                verdictCategory: autopsy.verdictCategory,
+                rootCause: autopsy.rootCause,
+                recommendation: autopsy.recommendation,
+                suggestedRemediation: autopsy.recommendation,
+                confidence: 0.95,
+              };
+              stepAuditTrail.screenshotPath = failShotPath;
+            }
+
             logs.push({
               step: stepNum,
               instruction: rawStep.text,
               status: 'FAILED',
               detail: reasonDetail,
               durationMs: Date.now() - stepStart,
+              aiAuditTrail: stepAuditTrail,
+              screenshotPath: failShotPath,
             });
 
-            return {
+            return finalizeResult({
               status: 'FAILED',
               url: options.url,
               totalSteps: compiled.totalSteps,
@@ -1550,7 +2451,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
               screenshotPath: failShotPath,
               totalDurationMs: Date.now() - startTime,
               logs,
-            };
+            });
           }
 
           // Trường hợp 3: Phần tử bị che khuất (ELEMENT_OBSCURED)
@@ -1577,15 +2478,29 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
             );
             await failPage.screenshot({ path: failShotPath, fullPage: false });
 
+            if (stepAuditTrail) {
+              stepAuditTrail.autopsy = {
+                failureCode: 'ELEMENT_OBSCURED',
+                verdictCategory: autopsy.verdictCategory,
+                rootCause: autopsy.rootCause,
+                recommendation: autopsy.recommendation,
+                suggestedRemediation: autopsy.recommendation,
+                confidence: 0.95,
+              };
+              stepAuditTrail.screenshotPath = failShotPath;
+            }
+
             logs.push({
               step: stepNum,
               instruction: rawStep.text,
               status: 'FAILED',
               detail: reasonDetail,
               durationMs: Date.now() - stepStart,
+              aiAuditTrail: stepAuditTrail,
+              screenshotPath: failShotPath,
             });
 
-            return {
+            return finalizeResult({
               status: 'FAILED',
               url: options.url,
               totalSteps: compiled.totalSteps,
@@ -1597,7 +2512,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
               screenshotPath: failShotPath,
               totalDurationMs: Date.now() - startTime,
               logs,
-            };
+            });
           }
 
           // Trường hợp 4: Lỗi thực thi ném ra từ executePhysicalAction
@@ -1606,19 +2521,29 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
           }
         }
 
-        const targetLabel =
-          target!.text ||
-          target!.placeholder ||
-          target!.ariaLabel ||
-          target!.nearLabel ||
-          target!.name ||
-          target!.elemId ||
-          target!.tag;
-        const aiTag =
-          resolved!.matchSource === 'LLM' || resolved!.matchSource === 'FUZZY_HEALED'
-            ? ` [AI Self-Healed: ${resolved!.reasoning || 'Fuzzy Damerau-Levenshtein Healed'}]`
-            : '';
-        subDetails.push(`${action.type} -> <${target!.tag}> "${targetLabel}"${aiTag}`);
+        if (target) {
+          const targetLabel =
+            target.text ||
+            target.placeholder ||
+            target.ariaLabel ||
+            target.virtualLabel ||
+            target.nearLabel ||
+            target.name ||
+            target.elemId ||
+            target.tag;
+          const aiTag =
+            resolved!.matchSource === 'LLM' ||
+            resolved!.matchSource === 'FUZZY_HEALED' ||
+            resolved!.matchSource === 'SVG_TOPOLOGY' ||
+            resolved!.matchSource === 'VISION_SOM'
+              ? ` [AI Self-Healed (${resolved!.matchSource}): ${resolved!.reasoning || 'Resolved'}]`
+              : '';
+          subDetails.push(`${action.type} -> <${target.tag}> "${targetLabel}"${aiTag}`);
+        } else if (resolved?.matchSource === 'VISION_SOM') {
+          subDetails.push(
+            `${action.type} -> [VISION_SOM Mark #${resolved.somMarkId ?? '?'}] (${resolved.reasoning || 'L3 Vision SoM'})`
+          );
+        }
       }
 
       // Thu thập các dialogs phát sinh trong bước này trên activePage
@@ -1638,6 +2563,36 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
         subDetails.push(...postStepTabLogs);
       }
 
+      const stepDomHash = await computePageDomHash(tabManager.getActivePage());
+      const stepShotName = `${prefix}step_${stepNum}_pass.png`;
+      const stepShotPath = path.join(outputDir, stepShotName);
+      await tabManager.getActivePage().screenshot({ path: stepShotPath, fullPage: false }).catch(() => {});
+
+      if (stepAuditTrail) {
+        stepAuditTrail.screenshotPath = stepShotPath;
+        stepAuditTrail.domHash = stepDomHash;
+        if (stepAuditTrail.decision) {
+          if (stepRoutingTier && !stepAuditTrail.decision.routingTier) {
+            stepAuditTrail.decision.routingTier = stepRoutingTier;
+          }
+          if (stepSomMarkId !== undefined && stepAuditTrail.decision.somMarkId === undefined) {
+            stepAuditTrail.decision.somMarkId = stepSomMarkId;
+          }
+          if (stepOcclusionStrategy && !stepAuditTrail.decision.occlusionStrategy) {
+            stepAuditTrail.decision.occlusionStrategy = stepOcclusionStrategy;
+          }
+          if (stepDismissedOverlays.length > 0) {
+            stepAuditTrail.decision.dismissedOverlays = [...stepDismissedOverlays];
+          }
+          if (stepNotificationVerdict && !stepAuditTrail.decision.notificationVerdict) {
+            stepAuditTrail.decision.notificationVerdict = stepNotificationVerdict;
+          }
+          if (stepNotificationWarnings.length > 0) {
+            stepAuditTrail.decision.notificationWarnings = [...stepNotificationWarnings];
+          }
+        }
+      }
+
       completedSteps++;
       logs.push({
         step: stepNum,
@@ -1646,6 +2601,15 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
         detail: subDetails.join(' ; '),
         durationMs: Date.now() - stepStart,
         dialogs: stepDialogs.length > 0 ? stepDialogs : undefined,
+        domHash: stepDomHash,
+        aiAuditTrail: stepAuditTrail,
+        screenshotPath: stepShotPath,
+        routingTier: stepRoutingTier,
+        somMarkId: stepSomMarkId,
+        occlusionStrategy: stepOcclusionStrategy,
+        dismissedOverlays: stepDismissedOverlays.length > 0 ? [...stepDismissedOverlays] : undefined,
+        notificationVerdict: stepNotificationVerdict,
+        notificationWarnings: stepNotificationWarnings.length > 0 ? [...stepNotificationWarnings] : undefined,
       });
     }
 
@@ -1667,7 +2631,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
     const warningsCount = allCapturedDialogs.filter((d) => d.warning).length;
     const warningNote = warningsCount > 0 ? ` (Có ${warningsCount} cảnh báo hộp thoại native)` : '';
 
-    return {
+    return finalizeResult({
       status: 'PASSED',
       url: options.url,
       totalSteps: compiled.totalSteps,
@@ -1677,7 +2641,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
       totalDurationMs: Date.now() - startTime,
       logs,
       dialogs: allCapturedDialogs,
-    };
+    });
   } catch (err: any) {
     const failedStep = logs.length + 1;
     const failShotName = `${prefix}fail_step_${failedStep}.png`;
@@ -1691,7 +2655,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
       // ignore
     }
 
-    return {
+    return finalizeResult({
       status: 'FAILED',
       url: options.url,
       totalSteps: compiled.totalSteps,
@@ -1704,7 +2668,7 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
       totalDurationMs: Date.now() - startTime,
       logs,
       dialogs: tabManager ? tabManager.getAllCapturedDialogs() : (dialogInterceptor ? dialogInterceptor.getHistory() : undefined),
-    };
+    });
   } finally {
     await browser.close();
   }
@@ -1718,28 +2682,63 @@ export async function runStrictTestScenario(options: RunOptions): Promise<TestRu
  * - Với CLICK / SELECT_ITEM: Click chuẩn xác -> nếu DOM đứng im tuyệt đối thì fallback dispatchEvent.
  * - Sau mỗi thao tác đều gọi barrier.waitForSettlement() để đợi API & DOM ổn định.
  */
-async function executePhysicalAction(
+export async function executePhysicalAction(
   page: Page,
   barrier: ActionSettlementBarrier,
   action: AtomicAction,
-  target: DOMCandidate
+  target: DOMCandidate,
+  telemetry?: PhysicalActionTelemetry
 ): Promise<void> {
   const targetFrame =
     target.frameIndex !== undefined && target.frameIndex < page.frames().length
       ? page.frames()[target.frameIndex]
       : page;
+  const frameArg: Frame | undefined = targetFrame !== page ? (targetFrame as Frame) : undefined;
 
   const locator = targetFrame.locator(target.selectorPath).first();
 
-  // Cuộn phần tử vào tầm nhìn (scrollIntoViewIfNeeded) và căn giữa (tránh bị Sticky Header che)
-  await locator.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
-  await locator.evaluate((el) => {
-    if (typeof (el as any).scrollIntoViewIfNeeded === 'function') {
-      (el as any).scrollIntoViewIfNeeded();
-    } else {
-      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-    }
-  }).catch(() => { });
+  // Prompt 11: Nếu có lớp phủ treo (dropdown/popover/modal) đang mở và bước kế tiếp vượt ranh giới ngữ cảnh,
+  // tự động giải phóng ngầm định trước khi cuộn/tương tác
+  const preDismiss = await barrier
+    .dismissHangingOverlaysIfCrossing({
+      selector: target.selectorPath,
+      elemId: target.elemId,
+      rect: target.rect,
+      point: target.safeClickPoint || {
+        x: target.rect.x + target.rect.width / 2,
+        y: target.rect.y + target.rect.height / 2,
+      },
+      candidate: target,
+      targetHint: action.targetHint,
+      actionType: action.type,
+    })
+    .catch(() => null);
+  const preDismissLabels = extractDismissedOverlayLabels(preDismiss);
+  if (preDismissLabels.length > 0 && telemetry) {
+    telemetry.dismissedOverlays = Array.from(
+      new Set([...(telemetry.dismissedOverlays || []), ...preDismissLabels])
+    );
+  }
+
+  // Prompt 10: Cuộn phần tử vào chính giữa Safe Viewport Band [H_top + 20px, VH - H_bottom - 20px]
+  const safeScrollRes = await scrollIntoSafeViewportBand(page, target, {
+    frame: frameArg,
+  }).catch(() => null);
+
+  if (!safeScrollRes || !safeScrollRes.inSafeBand) {
+    await locator.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+    await locator
+      .evaluate((el) => {
+        if (typeof (el as any).scrollIntoViewIfNeeded === 'function') {
+          (el as any).scrollIntoViewIfNeeded();
+        } else {
+          el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+        }
+      })
+      .catch(() => {});
+  } else if (safeScrollRes.afterRect) {
+    target.rect = safeScrollRes.afterRect;
+  }
   await waitForUIQuiescence(page, 300, barrier);
 
   if (action.type === 'HOVER') {
@@ -1792,13 +2791,33 @@ async function executePhysicalAction(
       await activeLocator.fill(val, { timeout: 4000 });
     }
 
-    // Kiểm tra lại xem React/Vue state đã nhận đúng value chưa
-    const actualVal = await activeLocator.inputValue().catch(() => '');
-    if (actualVal !== val) {
-      await activeLocator.selectText().catch(() => { });
+    // Trụ cột 12: Post-Fill Masked Input Integrity Verification
+    let actualVal = await activeLocator.inputValue().catch(() => '');
+    if (!actualVal) {
+      actualVal = await activeLocator.evaluate((el: any) => el.value || el.innerText || '').catch(() => '');
+    }
+
+    // Nếu giá trị thực tế không chứa đủ chuỗi ký tự cần nhập (do mask nuốt ký tự)
+    if (!checkMaskedInputIntegrity(actualVal, val)) {
+      // Fallback: Focus vào ô, nhấn Ctrl+A, Backspace, sau đó dùng page.keyboard.pressSequentially(value, { delay: 60 })
+      if (typeof (page.keyboard as any).pressSequentially !== 'function') {
+        (page.keyboard as any).pressSequentially = (text: string, opts?: any) => page.keyboard.type(text, opts);
+      }
+      await activeLocator.focus().catch(() => {});
+      try {
+        await page.keyboard.press('ControlOrMeta+a');
+      } catch {
+        await page.keyboard.press('Control+a');
+      }
+      await page.keyboard.press('Backspace');
+      await activeLocator.evaluate((el: any) => { if (el.value) el.value = ''; }).catch(() => {});
+      await (page.keyboard as any).pressSequentially(val, { delay: 60 });
+    } else if (actualVal !== val && !normalizeMaskedValue(actualVal).includes(normalizeMaskedValue(val))) {
+      await activeLocator.selectText().catch(() => {});
       await page.keyboard.press('Backspace');
       await activeLocator.pressSequentially(val, { delay: 25 });
     }
+
     // Bắn sự kiện blur nhẹ để kích hoạt form validation nếu có
     await activeLocator
       .evaluate((el) => {
@@ -1828,6 +2847,34 @@ async function executePhysicalAction(
         .first();
       await activeSearchLocator.fill(val, { timeout: 4000 });
     }
+
+    // Trụ cột 12: Post-Fill Masked Input Integrity Verification cho SEARCH
+    let actualSearchVal = await activeSearchLocator.inputValue().catch(() => '');
+    if (!actualSearchVal) {
+      actualSearchVal = await activeSearchLocator.evaluate((el: any) => el.value || el.innerText || '').catch(() => '');
+    }
+
+    if (!checkMaskedInputIntegrity(actualSearchVal, val)) {
+      if (typeof (page.keyboard as any).pressSequentially !== 'function') {
+        (page.keyboard as any).pressSequentially = (text: string, opts?: any) => page.keyboard.type(text, opts);
+      }
+      await activeSearchLocator.focus().catch(() => {});
+      try {
+        await page.keyboard.press('ControlOrMeta+a');
+      } catch {
+        await page.keyboard.press('Control+a');
+      }
+      await page.keyboard.press('Backspace');
+      await activeSearchLocator.evaluate((el: any) => { if (el.value) el.value = ''; }).catch(() => {});
+      await (page.keyboard as any).pressSequentially(val, { delay: 60 });
+      await activeSearchLocator
+        .evaluate((el) => {
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        })
+        .catch(() => {});
+    }
+
     await page.keyboard.press('Enter');
     await waitForUIQuiescence(page, 6000, barrier);
     return;
@@ -1858,33 +2905,98 @@ async function executePhysicalAction(
       return;
     }
 
-    // Ghi nhận số lần biến đổi DOM trước khi click
-    const beforeMut = await page
-      .evaluate(() => window.__autotestState?.mutationCount || 0)
-      .catch(() => 0);
-    const beforeUrl = page.url();
+    // Prompt 11: Ghi nhận trigger nếu phần tử có khả năng mở dropdown/popover/modal
+    if (isPotentialOverlayTrigger(target)) {
+      barrier.recordOverlayTrigger(target);
+    }
 
-    await locator.click({ timeout: 15000 });
-    await waitForUIQuiescence(page, 500, barrier);
+    // Prompt 10: Safe Viewport Band + 5-Point Hit-Test + Sutherland-Hodgman Centroid (>=40%, >=24x24px)
+    // Bảo đảm 100% sự kiện vật lý tin cậy (isTrusted: true), tuyệt đối KHÔNG bypass bằng JS synthetic el.click()
+    let safeRes: SafeClickResolution | null = await resolveSafeClickPoint(
+      page,
+      target.rect,
+      target,
+      { autoScroll: true, frame: frameArg }
+    ).catch(() => null);
 
-    const afterMut = await page
-      .evaluate(() => window.__autotestState?.mutationCount || 0)
-      .catch(() => 0);
-    const afterUrl = page.url();
-
-    // Zero-Effect Detection: Nếu sau khi click mà URL không đổi và DOM không có bất kỳ biến đổi nào,
-    // thử kích hoạt native click event lên phần tử để đảm bảo React/Vue synthetic listener bắt được
-    if (beforeUrl === afterUrl && beforeMut === afterMut) {
-      await locator
-        .evaluate((el) => {
-          (el as HTMLElement).click();
+    // Nếu bị che hoàn toàn (FULLY_OCCLUDED) hoặc vùng hở không đủ (<40% / <24x24px):
+    // Kích hoạt thang cứu nguy Prompt 11 (Implicit Dismissal) & Prompt 13 (4-Tier Toast Evasion) rồi tái kiểm tra
+    if (safeRes && !safeRes.canClick && safeRes.requiresDismissalLadder) {
+      const escDismiss = await barrier
+        .dismissHangingOverlaysIfCrossing({
+          selector: target.selectorPath,
+          elemId: target.elemId,
+          rect: safeRes.targetRect || target.rect,
+          candidate: target,
+          targetHint: action.targetHint,
+          actionType: action.type,
         })
-        .catch(() => { });
+        .catch(() => null);
+      const escDismissLabels = extractDismissedOverlayLabels(escDismiss);
+      if (escDismissLabels.length > 0 && telemetry) {
+        telemetry.dismissedOverlays = Array.from(
+          new Set([...(telemetry.dismissedOverlays || []), ...escDismissLabels])
+        );
+      }
+
+      const hasToastObstacle = safeRes.obstacles.some((o) => o.category === 'toast');
+      if (hasToastObstacle || escDismissLabels.length === 0) {
+        const toastClickRes = await barrier
+          .clickTargetWithToastEvasion(
+            { rect: safeRes.targetRect || target.rect, selectorPath: target.selectorPath },
+            { targetSelector: target.selectorPath }
+          )
+          .catch(() => null);
+
+        if (toastClickRes && toastClickRes.clicked && toastClickRes.evasion.occludedInitially) {
+          if (telemetry) {
+            telemetry.occlusionStrategy = `TOAST_EVASION_${toastClickRes.evasion.strategy}`;
+            telemetry.resolvedClickPoint = toastClickRes.evasion.clickPoint;
+          }
+          await waitForUIQuiescence(page, 7000, barrier);
+          return;
+        }
+      }
+
+      // Tái đánh giá tọa độ click an toàn sau khi dẹp vật cản
+      safeRes = await resolveSafeClickPoint(
+        page,
+        safeRes.targetRect || target.rect,
+        target,
+        { autoScroll: true, frame: frameArg }
+      ).catch(() => safeRes);
+    }
+
+    if (safeRes && safeRes.canClick && safeRes.clickPoint) {
+      if (telemetry) {
+        telemetry.occlusionStrategy =
+          safeRes.scrolledToSafeBand && safeRes.strategy === 'CENTER'
+            ? 'SAFE_BAND_SCROLL'
+            : safeRes.strategy;
+        telemetry.resolvedClickPoint = safeRes.clickPoint;
+      }
+      await page.mouse.move(safeRes.clickPoint.x, safeRes.clickPoint.y);
+      await page.mouse.click(safeRes.clickPoint.x, safeRes.clickPoint.y);
+    } else if (
+      safeRes &&
+      (safeRes.status === 'FULLY_OCCLUDED' || safeRes.status === 'INSUFFICIENT_EXPOSED_AREA')
+    ) {
+      throw new Error(
+        `ELEMENT_OBSCURED (${safeRes.status}): ${safeRes.reason}`
+      );
+    } else {
+      // Fallback sang Playwright physical locator.click() (vẫn đảm bảo isTrusted: true)
+      if (telemetry && !telemetry.occlusionStrategy) {
+        telemetry.occlusionStrategy = 'PLAYWRIGHT_PHYSICAL_CLICK';
+      }
+      await locator.click({ timeout: 15000 });
     }
 
     await waitForUIQuiescence(page, 7000, barrier);
   }
 }
+
+export const executeStepAction = executePhysicalAction;
 
 /**
  * Vẽ khung khoanh vùng phần tử bị lỗi và thanh trạng thái lên màn hình trước khi chụp ảnh bằng chứng.

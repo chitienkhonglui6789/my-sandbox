@@ -1,0 +1,95 @@
+{
+  "name": "Enterprise Real-World Stress Benchmark Suite",
+  "version": "1.0.0",
+  "description": "Bộ kiểm thử nghiệm thu 6 bẫy thực tế đo lường độ chính xác và tính tự phục hồi theo QUY_CHUAN_AI_RESOLVER.md",
+  "referenceDocs": [
+    "QUY_CHUAN_AI_RESOLVER.md (15 Trụ cột hành vi AI)",
+    "QUY_CHUAN_DANH_GIA.md (4-Oracle Taxonomy & 0% False Positive)",
+    "QUY_CHUAN_KICH_BAN.md (Canonical DSL & AST JSON)"
+  ],
+  "totalScenarios": 6,
+  "traps": [
+    {
+      "id": "TRAP-01",
+      "name": "Typo & Transposition Trap ('sign ni', 'submti', 'usernmae')",
+      "pillar": "Pillar 4 (Fuzzy Intent & Damerau-Levenshtein Self-Healing)",
+      "endpoint": "/trap-1-typo.html",
+      "description": "Giao diện web với ô input 'Username' và hai nút 'Submit', 'Sign In'. Kịch bản kiểm thử cố tình gõ sai chính tả và đảo vị trí ký tự liền kề ('usernmae', 'submti', 'sign ni'). Hệ thống phải tự phục hồi (Self-Healing) qua Damerau-Levenshtein (Khoảng cách = 1) mà không đánh trượt.",
+      "expectedOutcome": "PASSED",
+      "expectedFalsePositiveRate": 0,
+      "expectedHealedSteps": 3,
+      "steps": [
+        "(1) Điền \"testuser\" vào ô \"usernmae\"",
+        "(2) Bấm \"submti\"",
+        "(3) Bấm \"sign ni\"",
+        "(4) Kiểm tra hiện chữ \"Đăng nhập thành công\""
+      ]
+    },
+    {
+      "id": "TRAP-02",
+      "name": "Antonym Barrier Trap (Delete Account vs Save Draft)",
+      "pillar": "Pillar 5 (Antonym Barrier Matrix & Strict Guardrails)",
+      "endpoint": "/trap-2-antonym.html",
+      "description": "Giao diện có 2 nút đối lập nghiêm ngặt đặt cạnh nhau: 'Delete Account' (màu đỏ) và 'Save Draft' (màu xanh). Kịch bản yêu cầu bấm lưu; Hàng rào từ trái nghĩa phải triệt tiêu nút Delete về 0% và ngăn tuyệt đối AI click nhầm nút Delete.",
+      "expectedOutcome": "PASSED",
+      "expectedFalsePositiveRate": 0,
+      "steps": [
+        "(1) Bấm \"Save Draft\"",
+        "(2) Kiểm tra hiện chữ \"Bản nháp đã được lưu thành công\""
+      ]
+    },
+    {
+      "id": "TRAP-03",
+      "name": "Slow Network & Quiescence Trap (3s Loading Spinner)",
+      "pillar": "Pillar 1 & 2 (UI Quiescence Watcher & Settlement Barrier)",
+      "endpoint": "/trap-3-quiescence.html",
+      "description": "Trang web có spinner loading quay tròn mất 3 giây trước khi nạp xong nút thanh toán. Quiescence Watcher phải nín thở chờ cho đến khi spinner biến mất hoàn toàn và DOM đạt trạng thái tĩnh thay vì đánh trượt sớm.",
+      "expectedOutcome": "PASSED",
+      "expectedFalsePositiveRate": 0,
+      "steps": [
+        "(1) Bấm \"Tiếp tục thanh toán\"",
+        "(2) Kiểm tra hiện chữ \"Thanh toán hoàn tất thành công\""
+      ]
+    },
+    {
+      "id": "TRAP-04",
+      "name": "Masked Input Trap (Formatted Phone Number)",
+      "pillar": "Pillar 12 (Post-Fill Masked Input Integrity Verification)",
+      "endpoint": "/trap-4-masked.html",
+      "description": "Trường nhập số điện thoại tự động định dạng mặt nạ (090) 123-4567. Sau khi điền, hệ thống xác minh tính toàn vẹn ký tự và bảo đảm giá trị đã lưu giữ nguyên cấu trúc mong đợi.",
+      "expectedOutcome": "PASSED",
+      "expectedFalsePositiveRate": 0,
+      "steps": [
+        "(1) Điền \"(090) 123-4567\" vào ô \"Số điện thoại\"",
+        "(2) Bấm \"Lưu số điện thoại\"",
+        "(3) Kiểm tra hiện chữ \"Đã lưu: (090) 123-4567\""
+      ]
+    },
+    {
+      "id": "TRAP-05",
+      "name": "Native Dialog Trap (window.confirm Auto-Handled)",
+      "pillar": "Pillar 7 (Native Browser Dialog Interceptor)",
+      "endpoint": "/trap-5-dialog.html",
+      "description": "Trang web kích hoạt hộp thoại xác nhận cấp trình duyệt window.confirm('Bạn có chắc chắn?'). Runner tự động lắng nghe và giải phóng hộp thoại theo ngữ cảnh mà không làm treo tiến trình kiểm thử.",
+      "expectedOutcome": "PASSED",
+      "expectedFalsePositiveRate": 0,
+      "steps": [
+        "(1) Bấm \"Xác nhận thao tác\"",
+        "(2) Kiểm tra hiện chữ \"Thao tác đã được xác nhận thành công\""
+      ]
+    },
+    {
+      "id": "TRAP-06",
+      "name": "Virtualized List Trap (Incremental Step-Scroll Deep Item)",
+      "pillar": "Pillar 10 (Virtualized List Incremental Scroll Engine)",
+      "endpoint": "/trap-6-virtual-list.html",
+      "description": "Danh sách ảo hóa (Recycled DOM) chỉ render vài phần tử trong viewport ban đầu. Phần tử đích nằm ở vị trí cuộn sâu (đòi hỏi cuộn nhiều nấc để mount). Scroll Engine tự động cuộn từng nấc 350px để phát hiện và click phần tử.",
+      "expectedOutcome": "PASSED",
+      "expectedFalsePositiveRate": 0,
+      "steps": [
+        "(1) Bấm \"Chọn Sản Phẩm 25 Đích Thực\"",
+        "(2) Kiểm tra hiện chữ \"Đã chọn: Sản phẩm 25\""
+      ]
+    }
+  ]
+}
